@@ -1,0 +1,39 @@
+sc-gamedata-dumps
+
+This is an unofficial Star Citizen fan project.
+
+--------------------------------------------------------------------------------
+Required notice
+
+This site is not endorsed by or affiliated with the Cloud Imperium or Roberts
+Space Industries group of companies. All game content and materials are
+copyright Cloud Imperium Rights LLC and Cloud Imperium Rights Ltd. Star
+Citizen(R), Squadron 42(R), Roberts Space Industries(R), and Cloud Imperium(R)
+are registered trademarks of Cloud Imperium Rights LLC. All rights reserved.
+
+--------------------------------------------------------------------------------
+Scope
+
+Published on a non-commercial basis. Nothing here is sold, licensed or
+monetised, and no advertising, sponsorship, subscription or compensation of any
+kind is taken against it or against anything that reads it.
+
+Published: numeric values, identifiers, structural relationships and display
+names, parsed into JSON.
+
+Not published: descriptive text, dialogue and mission prose beyond name keys.
+No game assets of any kind — no binaries, models, textures, audio or fonts.
+No Fankit assets and no Cloud Imperium branding are used or redistributed here.
+
+--------------------------------------------------------------------------------
+Removal
+
+This repository will be removed on request from Cloud Imperium Games, without
+argument. Contact the maintainer, or open an issue.
+
+--------------------------------------------------------------------------------
+Tooling
+
+Produced by sc-gamedata (https://github.com/voidput/sc-gamedata), which invokes
+StarBreaker (https://github.com/diogotr7/StarBreaker) as an external executable.
+StarBreaker is not bundled or redistributed here.

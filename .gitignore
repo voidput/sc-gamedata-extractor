@@ -1,0 +1,18 @@
+node_modules/
+dist/
+*.log
+
+# Raw StarBreaker output: large, regenerable, and not the deliverable.
+extracted-data/
+extracted-data-full/
+
+# Parsed datasets are not committed here. Publishing a build is what
+# scripts/publish-dump.mjs does, into the dumps repo, where one commit per
+# build carrying its _build is what makes patch-over-patch diffs possible.
+data/
+
+overlays/
+overlay-sources.json
+
+# Checkout of the public dumps repo, managed by scripts/publish-dump.mjs.
+.publish-repo/

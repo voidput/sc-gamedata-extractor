@@ -1,0 +1,40 @@
+sc-gamedata
+Copyright 2026 Nyle Garcia
+
+Licensed under the Apache License, Version 2.0.
+
+--------------------------------------------------------------------------------
+Attribution
+
+The extract-then-parse pipeline design, the per-domain dataset breakdown, and the
+identification of which DataCore record paths carry which game data follow prior
+work in dumpers_repo:
+
+    https://github.com/Sinedrone-Sentinel/dumpers_repo
+    Copyright (c) Michael Linzenmeyer
+    Licensed under the Apache License, Version 2.0
+
+This is an independent implementation. It shares no source with that project and
+was written against the DataCore record schema directly. The proprietary DFP
+pricing engine carved out of that repository's licence is not used, referenced,
+or reimplemented here.
+
+--------------------------------------------------------------------------------
+Third-party tools
+
+StarBreaker (https://github.com/diogotr7/StarBreaker) is invoked as an external
+executable. It is not bundled or redistributed.
+
+--------------------------------------------------------------------------------
+Game content
+
+This tool ships no game content. It reads files from an installation the user
+already has, and writes JSON describing what it finds.
+
+This site is not endorsed by or affiliated with the Cloud Imperium or Roberts
+Space Industries group of companies. All game content and materials are
+copyright Cloud Imperium Rights LLC and Cloud Imperium Rights Ltd. Star
+Citizen(R), Squadron 42(R), Roberts Space Industries(R), and Cloud Imperium(R)
+are registered trademarks of Cloud Imperium Rights LLC. All rights reserved.
+
+Published and used on a non-commercial basis.
