@@ -12,10 +12,19 @@
  * The tree is flattened to leaves while keeping the choice structure, because a
  * recipe that lets you pick two of five aspects is not the same as one needing
  * all five.
+ *
+ * `blueprintName` is a placeholder on nearly every record, so the display name
+ * comes from the item the blueprint produces.
+ *
+ * Blueprints are earned from missions: a contract's results may include
+ * `BlueprintRewards`, which point at a BlueprintPoolRecord of weighted
+ * blueprints. The contract is the nearest enclosing object with a debugName
+ * (a Contract or CareerContract), its handler the generator group above it.
  */
 
 import { isPlaceholderName, localize, type Localization } from "../localization.js";
-import { at, num, refShortName, str, type GameRecord } from "../records.js";
+import { at, compareNames, indexByRecordPath, num, refPath, refShortName, str, type GameRecord } from "../records.js";
+import { itemIdentity } from "./item-common.js";
 import type { Domain } from "./types.js";
 
 export interface ResourceCost {
@@ -127,7 +136,90 @@ export interface Blueprint {
   category?: string;
   /** What the blueprint produces. */
   produces?: string;
+  /** The produced item's display name. */
+  displayName?: string;
   tiers: BlueprintTier[];
+  /** Missions that can award this blueprint. */
+  rewardedBy?: BlueprintReward[];
+}
+
+export interface BlueprintReward {
+  /** The mission's title, or its debug name when it has none. */
+  mission: string;
+  contract: string;
+  /** Generator handler the contract belongs to, e.g. "TheCollector_Small_Items". */
+  generator?: string;
+  pool: string;
+  /** Chance the pool is awarded on completion. */
+  chance?: number;
+  /** This blueprint's weight within the pool, and the pool's total. */
+  weight?: number;
+  poolWeight?: number;
+}
+
+export interface RewardPool {
+  name: string;
+  blueprints: { blueprint: string; weight?: number }[];
+}
+
+/** Blueprint pools by record path, with each entry's blueprint path. */
+function parsePools(records: GameRecord[]): Map<string, { record: GameRecord; entries: { path: string; weight?: number }[] }> {
+  const pools = new Map<string, { record: GameRecord; entries: { path: string; weight?: number }[] }>();
+  for (const record of records) {
+    if (record.type !== "BlueprintPoolRecord") continue;
+    const list = Array.isArray(record.value.blueprintRewards) ? record.value.blueprintRewards : [];
+    const entries = list
+      .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+      .map((e) => ({ path: refPath(e.blueprintRecord) ?? "", weight: num(e.weight) }))
+      .filter((e) => e.path);
+    const path = refPath(record.recordPath);
+    if (path) pools.set(path, { record, entries });
+  }
+  return pools;
+}
+
+/** Every BlueprintRewards in the contract generators, with the contract it sits on. */
+export function collectBlueprintRewards(
+  records: GameRecord[],
+  localization: Localization = new Map(),
+): { pool: string; chance?: number; contract: string; mission: string; generator?: string }[] {
+  const found: { pool: string; chance?: number; contract: string; mission: string; generator?: string }[] = [];
+  const titleOf = (contract: Record<string, unknown>) => {
+    const params = at(contract, "paramOverrides.stringParamOverrides");
+    const title = Array.isArray(params)
+      ? (params as Record<string, unknown>[]).find((p) => p?.param === "Title")?.value
+      : undefined;
+    const text = localize(localization, title);
+    return text && !isPlaceholderName(text) ? text : undefined;
+  };
+  const walk = (value: unknown, named: Record<string, unknown>[]) => {
+    if (Array.isArray(value)) {
+      for (const entry of value) walk(entry, named);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    const obj = value as Record<string, unknown>;
+    const here = typeof obj.debugName === "string" ? [...named, obj] : named;
+    if (obj._Type_ === "BlueprintRewards") {
+      const contract = here[here.length - 1];
+      const pool = refPath(obj.blueprintPool);
+      if (contract && pool) {
+        const debugName = String(contract.debugName);
+        found.push({
+          pool,
+          chance: num(obj.chance),
+          contract: debugName,
+          mission: titleOf(contract) ?? debugName,
+          generator: here.length > 1 ? String(here[here.length - 2].debugName) : undefined,
+        });
+      }
+    }
+    for (const entry of Object.values(obj)) walk(entry, here);
+  };
+  for (const record of records) {
+    if (record.recordPath.includes("/contracts/")) walk(record.value, []);
+  }
+  return found;
 }
 
 export function parseBlueprint(
@@ -177,16 +269,71 @@ export function parseBlueprint(
 
 export const blueprintsDomain: Domain = {
   name: "game-blueprints",
-  description: "Crafting blueprints with their recipe costs and craft times.",
-  filters: ["**/crafting/**"],
+  description: "Crafting blueprints with their recipe costs, craft times, item names and the missions that award them.",
+  filters: [
+    "**/crafting/**",
+    "**/contracts/contractgenerator/**",
+    "**/contracts/contractscenarios/**",
+    // What blueprints produce, for display names.
+    "**/entities/scitem/ships/**",
+    "**/entities/scitem/weapons/**",
+    "**/entities/scitem/characters/human/**",
+    "**/entities/scitem/carryables/**",
+  ],
   needsLocalization: true,
 
   parse({ records, localization }) {
-    const blueprints = records
-      .filter((r) => r.type === "CraftingBlueprintRecord")
-      .map((r) => parseBlueprint(r, localization))
-      .filter((b): b is Blueprint => b !== undefined)
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const byPath = indexByRecordPath(records);
+    const pools = parsePools(records);
+
+    // Blueprint path -> the missions that can award it.
+    const rewards = new Map<string, BlueprintReward[]>();
+    for (const reward of collectBlueprintRewards(records, localization)) {
+      const pool = pools.get(reward.pool);
+      if (!pool) continue;
+      const poolWeight = pool.entries.reduce((sum, e) => sum + (e.weight ?? 0), 0);
+      for (const entry of pool.entries) {
+        const list = rewards.get(entry.path) ?? [];
+        list.push({
+          mission: reward.mission,
+          contract: reward.contract,
+          generator: reward.generator,
+          pool: pool.record.shortName,
+          chance: reward.chance,
+          weight: entry.weight,
+          poolWeight: poolWeight || undefined,
+        });
+        rewards.set(entry.path, list);
+      }
+    }
+
+    const blueprints: Blueprint[] = [];
+    for (const record of records) {
+      if (record.type !== "CraftingBlueprintRecord") continue;
+      const blueprint = parseBlueprint(record, localization);
+      if (!blueprint) continue;
+      const product = byPath.get(refPath(at(record.value, "blueprint.processSpecificData.entityClass")) ?? "");
+      const identity = product ? itemIdentity(product, localization) : undefined;
+      if (identity && !identity.isTemplate) {
+        blueprint.displayName = identity.name;
+        if (blueprint.name === blueprint.produces) blueprint.name = identity.name;
+      }
+      const awarded = rewards.get(refPath(record.recordPath) ?? "");
+      if (awarded) {
+        // One row per contract and pool; repeated pool entries are the same reward.
+        const unique = new Map(awarded.map((a) => [`${a.contract}|${a.pool}`, a]));
+        blueprint.rewardedBy = [...unique.values()].sort((a, b) => compareNames(a.mission, b.mission));
+      }
+      blueprints.push(blueprint);
+    }
+    blueprints.sort((a, b) => compareNames(a.name, b.name));
+
+    const rewardPools: RewardPool[] = [...pools.values()]
+      .map(({ record, entries }) => ({
+        name: record.shortName,
+        blueprints: entries.map((e) => ({ blueprint: byPath.get(e.path)?.shortName ?? e.path.split("/").pop()!, weight: e.weight })),
+      }))
+      .sort((a, b) => compareNames(a.name, b.name));
 
     // Which resources appear across recipes, and in how many, answers "what is
     // worth mining" without walking every blueprint.
@@ -208,6 +355,7 @@ export const blueprintsDomain: Domain = {
 
     return {
       blueprints,
+      rewardPools,
       resourceUse: Object.fromEntries(
         Object.entries(resourceUse).sort((a, b) => b[1] - a[1]),
       ),
@@ -216,6 +364,9 @@ export const blueprintsDomain: Domain = {
         blueprints: blueprints.length,
         distinctResources: Object.keys(resourceUse).length,
         categories: Object.keys(byCategory).length,
+        named: blueprints.filter((b) => b.displayName).length,
+        rewarded: blueprints.filter((b) => b.rewardedBy).length,
+        rewardPools: rewardPools.length,
       },
     };
   },

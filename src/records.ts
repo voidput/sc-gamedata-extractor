@@ -140,6 +140,26 @@ export function compareNames(a: string, b: string): number {
   return NAME_COLLATOR.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
 }
 
+const RECORDS_ROOT = "libs/foundry/records/";
+
+/** `file://./../../libs/foundry/records/damage/lightarmor.json` -> `damage/lightarmor`. */
+export function refPath(ref: unknown): string | undefined {
+  if (typeof ref !== "string") return undefined;
+  const lower = ref.toLowerCase();
+  const start = lower.indexOf(RECORDS_ROOT);
+  return start >= 0 ? lower.slice(start + RECORDS_ROOT.length).replace(/\.json$/, "") : undefined;
+}
+
+/** Records by lower-case path below the records root, which is how references name them. */
+export function indexByRecordPath(records: GameRecord[]): Map<string, GameRecord> {
+  const index = new Map<string, GameRecord>();
+  for (const record of records) {
+    const path = refPath(record.recordPath);
+    if (path) index.set(path, record);
+  }
+  return index;
+}
+
 /** Index records by full name for reference resolution. */
 export function indexByName(records: GameRecord[]): Map<string, GameRecord> {
   return new Map(records.map((r) => [r.name, r]));

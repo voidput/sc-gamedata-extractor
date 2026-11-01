@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { armorDomain, containerMicroScu, refPath, slotOf } from "./armor.js";
+import { armorDomain, containerMicroScu, slotOf } from "./armor.js";
 import { consumablesDomain } from "./consumables.js";
 import { lawDomain, setParameters } from "./law.js";
 import { lootDomain } from "./loot.js";
 import { buildTagIndex, compactValue } from "../tags.js";
-import type { GameRecord } from "../records.js";
+import { refPath, type GameRecord } from "../records.js";
 
 const empty = new Map<string, string>();
 

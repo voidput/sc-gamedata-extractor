@@ -328,18 +328,18 @@ From game files, verified against a real extraction:
 | `game-mining` | 46 mineable elements, 27 mining modules |
 | `game-manufacturers` | 126 manufacturer codes with resolved names |
 | `game-ship-components` | 73 shields, 63 quantum drives, 89 power plants, 84 coolers, 79 radars, 220 armour sets, 213 fuel tanks, 134 cargo grids, 169 missile racks, 194 countermeasures, 1433 thrusters and more, every one with power, EM/IR, HP, mass and durability |
-| `game-blueprints` | 1607 crafting recipes across 14 categories, 26 resources |
+| `game-blueprints` | 1618 crafting recipes across 14 categories, 26 resources; 1586 named after the item they make, 687 with the missions that award them (title, contract, chance, pool weight); 160 reward pools |
 | `game-wikelo-trades` | 53 Wikelo trades with full hand-in lists |
 | `game-missions` | 2584 mission broker entries, 1978 of them live |
 | `game-ships` | 1144 ships and ground vehicles with role, crew, dimensions, hull resistances, the stock loadout and its totals (DPS, shields, power, fuel, cargo, thrust) |
 | `game-ammo` | 242 ammo records, 228 carrying damage. Join to weapons for DPS |
 | `game-fps-weapons` | 446 personal ranged and melee weapons |
-| `game-starmap` | 2068 locations with hierarchy, type and amenities |
+| `game-starmap` | 2131 locations with type, amenities, jurisdiction, and their chain from the system down (`path`, `system`) |
 | `game-reputation` | 380 ranks across 239 organisations |
 | `game-containers` | 582 cargo grids and inventories with capacity |
-| `game-mining-spawns` | 49 locations, 33 ores, 1014 spawn entries. Which ore is where |
+| `game-mining-spawns` | 49 spawn locations (named and placed on the star map where it has them), 33 ores, 1014 spawn entries with each entry's share of its group; 268 rocks with RS scan signature, deposit tier, ship/vehicle/hand kind and composition with per-ore quality scale; `oreSpawns`, one row per ore per location |
 | `game-weapons` | 237 ship weapons and 432 FPS weapons joined to their ammo, plus 67 missiles. The combat baseline |
-| `game-commodities` | 207 resource types with group, density, refined form and volatility; 135 commodity cargo items linked to their resource; cargo impact and explosion damage |
+| `game-commodities` | 207 resource types with group, density, refined form and volatility, and for 44 of them quality: the rarity tier, the 0-1000 distribution quality is rolled from, location overrides (Pyro, Nyx clusters) and the bands that snap a roll to the shown value; 135 commodity cargo items linked to their resource; cargo impact and explosion damage |
 | `game-refining` | The 9 refining methods with the in-game yield, cost and speed ratings and descriptions, 30 raw-to-refined pairs with densities, the 4 workload surcharge tiers, refining quality settings |
 | `game-shops` | Global shop rules: sell-back percentages with 46 item-type overrides, supply and demand bands, auto-loading fees per box size |
 | `game-cargo` | 82 NPC and mission cargo manifests in 10 categories (fill mode, capacity range, resources), freight loading timings |

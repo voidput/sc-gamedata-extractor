@@ -16,8 +16,7 @@
  */
 
 import { isUnresolved, localize, type Localization } from "../localization.js";
-import { compareNames, num, refShortName, str, type GameRecord } from "../records.js";
-import { refPath } from "./armor.js";
+import { compareNames, num, refPath, refShortName, str, type GameRecord } from "../records.js";
 import type { Domain } from "./types.js";
 
 /** The parameter fields that are set, with -1 ("inherit") and empty lists dropped. */

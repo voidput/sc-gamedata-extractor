@@ -15,10 +15,17 @@
  * volatile cargo exploding. The Prospector and MOLE variants differ from the
  * base only in their explosion effect and offset, so only gameplay numbers are
  * kept.
+ *
+ * Quality runs 0-1000. A resource's ResourceTypeCraftingData points at three
+ * records: the distribution its quality is rolled from (a normal curve with
+ * min, max, mean and spread, shared by rarity tier: every legendary ship ore
+ * rolls 501-1000), location overrides of that curve (Pyro, Nyx clusters), and
+ * the quantization bands that snap a rolled value to what the game shows
+ * (Stileron 950-998 shows as 972).
  */
 
 import { isPlaceholderName, localize, type Localization } from "../localization.js";
-import { at, compareNames, num, refShortName, str, type GameRecord } from "../records.js";
+import { at, compareNames, indexByRecordPath, num, refPath, refShortName, str, type GameRecord } from "../records.js";
 import type { Domain } from "./types.js";
 
 /**
@@ -43,12 +50,91 @@ export interface ResourceType {
   /** The resource this refines into, for raw ores. */
   refinesTo?: string;
   volatility?: { volatility?: number; healthDecayPerSecond?: number };
+  quality?: ResourceQuality;
+}
+
+export interface QualityDistribution {
+  min?: number;
+  max?: number;
+  mean?: number;
+  stddev?: number;
+}
+
+export interface ResourceQuality {
+  /** The distribution record, e.g. "LegendaryShipMineable_QualityDistribution_Default". */
+  profile?: string;
+  /** Rarity tier the profile belongs to: "Legendary", "Common", "FPSMineable", "Gatherable"... */
+  tier?: string;
+  distribution?: QualityDistribution;
+  /** The same curve, replaced at these locations. */
+  locationOverrides?: (QualityDistribution & { location: string })[];
+  /** A rolled quality in [start, end] shows as `value`. */
+  bands?: { start?: number; end?: number; value?: number }[];
+}
+
+function distributionOf(value: unknown): QualityDistribution | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as Record<string, unknown>;
+  const out = { min: num(v.min), max: num(v.max), mean: num(v.mean), stddev: num(v.stddev) };
+  return Object.values(out).some((n) => n !== undefined) ? out : undefined;
+}
+
+/** Resolve a resource's crafting quality references. Undefined when it has none. */
+export function parseQuality(
+  props: Record<string, unknown>[],
+  byPath: Map<string, GameRecord>,
+  localization: Localization = new Map(),
+): ResourceQuality | undefined {
+  const crafting = props.find((p) => p?._Type_ === "ResourceTypeCraftingData");
+  if (!crafting) return undefined;
+  const lookup = (ref: unknown) => {
+    const path = refPath(ref);
+    return path ? byPath.get(path) : undefined;
+  };
+
+  const distribution = lookup(at(crafting, "qualityDistribution.qualityDistributionRecord"));
+  const overrides = lookup(at(crafting, "qualityLocationOverride.locationOverrideRecord"));
+  const quantization = lookup(at(crafting, "qualityQuantization.qualityQuantizationRecord"));
+
+  const overrideList = at(overrides?.value, "locationOverride.locationOverrideList");
+  // Sixty Nyx clusters share one display name and curve, so identical entries collapse.
+  const seen = new Set<string>();
+  const locationOverrides = (Array.isArray(overrideList) ? overrideList : [])
+    .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+    .map((e) => {
+      // Name the place as the star map does when its record was extracted.
+      const place = lookup(e.location);
+      const location =
+        displayNameOf(localization, place?.value.name) ?? place?.shortName ?? refPath(e.location)?.split("/").pop() ?? "?";
+      return { location, ...distributionOf(e.qualityDistribution) };
+    })
+    .filter((o) => {
+      const key = JSON.stringify(o);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+  const bandList = at(quantization?.value, "qualityQuantization.bands");
+  const bands = (Array.isArray(bandList) ? bandList : [])
+    .filter((b): b is Record<string, unknown> => !!b && typeof b === "object")
+    .map((b) => ({ start: num(b.start), end: num(b.end), value: num(b.mappedValue) }));
+
+  const quality: ResourceQuality = {
+    profile: distribution?.shortName,
+    tier: distribution?.shortName.replace(/(ShipMineable)?_QualityDistribution.*$/, ""),
+    distribution: distributionOf(at(distribution?.value, "qualityDistribution")),
+    locationOverrides: locationOverrides.length > 0 ? locationOverrides : undefined,
+    bands: bands.length > 0 ? bands : undefined,
+  };
+  return quality.profile || quality.bands ? quality : undefined;
 }
 
 function parseResource(
   raw: Record<string, unknown>,
   groups: string[],
   localization: Localization,
+  byPath: Map<string, GameRecord>,
 ): ResourceType | undefined {
   const recordName = str(raw._RecordName_);
   if (!recordName) return undefined;
@@ -66,6 +152,7 @@ function parseResource(
     volatility: volatile
       ? { volatility: num(volatile.volatility), healthDecayPerSecond: num(volatile.healthDecayPerSecond) }
       : undefined,
+    quality: parseQuality(props, byPath, localization),
   };
 }
 
@@ -73,13 +160,14 @@ function parseResource(
 export function parseResourceDatabase(
   record: GameRecord,
   localization: Localization = new Map(),
+  byPath: Map<string, GameRecord> = new Map(),
 ): ResourceType[] {
   const found: ResourceType[] = [];
   const walk = (group: Record<string, unknown>, path: string[]) => {
     const here = [...path, refShortName(group) ?? "?"];
     for (const raw of (group.resources as Record<string, unknown>[] | undefined) ?? []) {
       if (!raw) continue;
-      const resource = parseResource(raw, here, localization);
+      const resource = parseResource(raw, here, localization, byPath);
       if (resource) found.push(resource);
     }
     for (const child of (group.groups as Record<string, unknown>[] | undefined) ?? []) {
@@ -182,6 +270,10 @@ export const commoditiesDomain: Domain = {
     "**/resourcetypedatabase/**",
     "**/entities/commodities/**",
     "**/commodityconfiguration/**",
+    "**/crafting/qualitydistribution/**",
+    "**/crafting/qualityquantization/**",
+    // Systems and clusters directly under pu/, which quality overrides name.
+    "**/starmap/pu/*",
   ],
   needsLocalization: true,
 
@@ -189,7 +281,7 @@ export const commoditiesDomain: Domain = {
     // The database's own order is its group tree, so sort by group, then name.
     const resources = records
       .filter((r) => r.type === "ResourceTypeDatabase")
-      .flatMap((r) => parseResourceDatabase(r, localization))
+      .flatMap((r) => parseResourceDatabase(r, localization, indexByRecordPath(records)))
       .sort((a, b) => compareNames(a.group, b.group) || compareNames(a.displayName ?? a.name, b.displayName ?? b.name));
     const items = records
       .filter((r) => r.recordPath.includes("/entities/commodities/"))
