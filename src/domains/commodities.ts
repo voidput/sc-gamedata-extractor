@@ -1,0 +1,214 @@
+/**
+ * Commodities: the resource types the economy trades in, the cargo items that
+ * hold them, and what happens when volatile cargo is knocked about.
+ *
+ * Every tradable substance is a ResourceType inside one record, the
+ * ResourceTypeDatabase, nested in groups (`Metal > UnrefinedOres`). A raw ore
+ * names what it refines into through `refinedVersion`, which carries the whole
+ * refined resource inline rather than a reference.
+ *
+ * The cargo items under `entities/commodities` are thin wrappers: a display name,
+ * a type label, and a ResourceContainer whose default composition is one
+ * resource type. That link is the only thing tying an item to its resource.
+ *
+ * CommodityDamageConfiguration covers mined cargo taking impact damage and
+ * volatile cargo exploding. The Prospector and MOLE variants differ from the
+ * base only in their explosion effect and offset, so only gameplay numbers are
+ * kept.
+ */
+
+import { isPlaceholderName, localize, type Localization } from "../localization.js";
+import { at, compareNames, num, refShortName, str, type GameRecord } from "../records.js";
+import type { Domain } from "./types.js";
+
+/**
+ * A localized name, or undefined for placeholders and unresolved keys. UI markup
+ * is stripped: carbon dioxide is `CO<font size="%d">2</font>` in the table.
+ */
+export function displayNameOf(localization: Localization, value: unknown): string | undefined {
+  const name = localize(localization, value)?.replace(/<[^>]*>/g, "").trim();
+  return isPlaceholderName(name) ? undefined : name;
+}
+
+export interface ResourceType {
+  name: string;
+  recordName: string;
+  id: string;
+  displayName?: string;
+  /** Top-level group, e.g. "Metal". */
+  group: string;
+  /** Nested group path below the top level, e.g. ["UnrefinedOres"]. */
+  subgroups: string[];
+  densityGramsPerCc?: number;
+  /** The resource this refines into, for raw ores. */
+  refinesTo?: string;
+  volatility?: { volatility?: number; healthDecayPerSecond?: number };
+}
+
+function parseResource(
+  raw: Record<string, unknown>,
+  groups: string[],
+  localization: Localization,
+): ResourceType | undefined {
+  const recordName = str(raw._RecordName_);
+  if (!recordName) return undefined;
+  const props = Array.isArray(raw.properties) ? (raw.properties as Record<string, unknown>[]) : [];
+  const volatile = props.find((p) => p?._Type_ === "ResourceTypeVolatility");
+  return {
+    name: refShortName(raw) ?? recordName,
+    recordName,
+    id: str(raw._RecordId_) ?? "",
+    displayName: displayNameOf(localization, raw.displayName),
+    group: groups[0] ?? "",
+    subgroups: groups.slice(1),
+    densityGramsPerCc: num(at(raw, "densityType.densityUnit.gramsPerCubicCentimeter")),
+    refinesTo: refShortName(raw.refinedVersion),
+    volatility: volatile
+      ? { volatility: num(volatile.volatility), healthDecayPerSecond: num(volatile.healthDecayPerSecond) }
+      : undefined,
+  };
+}
+
+/** Walk the group tree. Groups and resources both contain null entries. */
+export function parseResourceDatabase(
+  record: GameRecord,
+  localization: Localization = new Map(),
+): ResourceType[] {
+  const found: ResourceType[] = [];
+  const walk = (group: Record<string, unknown>, path: string[]) => {
+    const here = [...path, refShortName(group) ?? "?"];
+    for (const raw of (group.resources as Record<string, unknown>[] | undefined) ?? []) {
+      if (!raw) continue;
+      const resource = parseResource(raw, here, localization);
+      if (resource) found.push(resource);
+    }
+    for (const child of (group.groups as Record<string, unknown>[] | undefined) ?? []) {
+      if (child) walk(child, here);
+    }
+  };
+  for (const group of (record.value.groups as Record<string, unknown>[] | undefined) ?? []) {
+    if (group) walk(group, []);
+  }
+  return found;
+}
+
+export interface CommodityItem {
+  name: string;
+  recordName: string;
+  id: string;
+  displayName?: string;
+  /** The game's type label, e.g. "Gas", "Metal". */
+  type?: string;
+  /** Folder under entities/commodities, e.g. "halogens". */
+  category: string;
+  resource?: string;
+  /** Capacity of one item in SCU. */
+  capacityScu?: number;
+}
+
+/** SCU from the game's unit wrappers: centi (1/100) and micro (1/1,000,000). */
+export function scuOf(capacity: unknown): number | undefined {
+  const centi = num(at(capacity, "centiSCU"));
+  if (centi !== undefined) return centi / 100;
+  const micro = num(at(capacity, "microSCU"));
+  if (micro !== undefined) return micro / 1_000_000;
+  return num(at(capacity, "standardCargoUnits"));
+}
+
+export function parseCommodityItem(
+  record: GameRecord,
+  localization: Localization = new Map(),
+): CommodityItem {
+  const components = (record.value.Components as Record<string, unknown>[] | undefined) ?? [];
+  const purchasable = components.find((c) => c?._Type_ === "SCItemPurchasableParams");
+  const container = components.find((c) => c?._Type_ === "ResourceContainer");
+  const composition = (container?.defaultComposition as Record<string, unknown>[] | undefined) ?? [];
+  const segments = record.recordPath.split("/");
+  const folder = segments.indexOf("commodities");
+  return {
+    name: record.shortName,
+    recordName: record.name,
+    id: record.id,
+    displayName: displayNameOf(localization, purchasable?.displayName),
+    type: displayNameOf(localization, purchasable?.displayType),
+    category: folder >= 0 && segments.length > folder + 2 ? segments[folder + 1] : "",
+    resource: refShortName(composition[0]?.entry),
+    capacityScu: scuOf(container?.capacity),
+  };
+}
+
+export interface CommodityDamage {
+  name: string;
+  recordName: string;
+  /** Impact speed in m/s below which cargo takes no damage. */
+  minimumSpeed?: number;
+  /** Damage per (m/s)^2 of impact speed above the minimum. */
+  speedSquaredToDamage?: number;
+  /** Seconds after loading before damage applies. */
+  gracePeriod?: number;
+  explosionDamage?: number;
+  explosionMinRadius?: number;
+  explosionMaxRadius?: number;
+  explosionPressure?: number;
+  volatilityRadiusFactor?: number;
+  volatilityDamageFactor?: number;
+  volatilityForceFactor?: number;
+  volatilityCommodityDamageFactor?: number;
+}
+
+export function parseCommodityDamage(record: GameRecord): CommodityDamage {
+  const v = record.value;
+  return {
+    name: record.shortName,
+    recordName: record.name,
+    minimumSpeed: num(v.minimumSpeed),
+    speedSquaredToDamage: num(v.speedSquaredToDamage),
+    gracePeriod: num(v.gracePeriod),
+    explosionDamage: num(at(v, "defaultExplosionParams.damage.damageTotal")),
+    explosionMinRadius: num(at(v, "defaultExplosionParams.minRadius")),
+    explosionMaxRadius: num(at(v, "defaultExplosionParams.maxRadius")),
+    explosionPressure: num(at(v, "defaultExplosionParams.pressure")),
+    volatilityRadiusFactor: num(v.volatilityRadiusFactor),
+    volatilityDamageFactor: num(v.volatilityDamageFactor),
+    volatilityForceFactor: num(v.volatilityForceFactor),
+    volatilityCommodityDamageFactor: num(v.volatilityCommodityDamageFactor),
+  };
+}
+
+export const commoditiesDomain: Domain = {
+  name: "game-commodities",
+  description: "Resource types with density and refined form, commodity cargo items, and cargo damage.",
+  filters: [
+    "**/resourcetypedatabase/**",
+    "**/entities/commodities/**",
+    "**/commodityconfiguration/**",
+  ],
+  needsLocalization: true,
+
+  parse({ records, localization }) {
+    // The database's own order is its group tree, so sort by group, then name.
+    const resources = records
+      .filter((r) => r.type === "ResourceTypeDatabase")
+      .flatMap((r) => parseResourceDatabase(r, localization))
+      .sort((a, b) => compareNames(a.group, b.group) || compareNames(a.displayName ?? a.name, b.displayName ?? b.name));
+    const items = records
+      .filter((r) => r.recordPath.includes("/entities/commodities/"))
+      .map((r) => parseCommodityItem(r, localization))
+      .sort((a, b) => compareNames(a.displayName ?? a.name, b.displayName ?? b.name));
+    const damage = records
+      .filter((r) => r.type === "CommodityDamageConfiguration")
+      .map(parseCommodityDamage)
+      .sort((a, b) => compareNames(a.name, b.name));
+
+    const byGroup: Record<string, string[]> = {};
+    for (const r of resources) (byGroup[r.group] ??= []).push(r.name);
+
+    return {
+      resources,
+      items,
+      damage,
+      byGroup,
+      summary: { resources: resources.length, items: items.length, damage: damage.length },
+    };
+  },
+};

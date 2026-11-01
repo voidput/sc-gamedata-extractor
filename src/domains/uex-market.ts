@@ -66,8 +66,63 @@ export const uexVehiclePricesDomain: ApiDomain = {
   },
 };
 
+/**
+ * Location rows carry an id for every level of the hierarchy, zero where it does
+ * not apply (a station has no city), and a reporter handle on audits. Neither is
+ * data about the refinery.
+ */
+function trimRefineryRow(row: unknown): unknown {
+  const trimmed = trimRow(row);
+  if (!trimmed || typeof trimmed !== "object") return trimmed;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(trimmed as Record<string, unknown>)) {
+    if (key.startsWith("id_") && value === 0) continue;
+    if (key === "datarunner" || key === "id_report") continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Refinery yields, capacity and methods as players report them.
+ *
+ * None of this is in the game files: the client ships the nine method names and
+ * the raw-to-refined pairs (see game-refining), while the yield bonus per station
+ * and commodity, and each method's yield, cost and speed, are server-side. UEX is
+ * crowdsourced, so treat these as observed values, not ground truth.
+ */
+export const uexRefineryDomain: ApiDomain = {
+  name: "uex-refinery",
+  description: "Refinery yield bonuses by station and commodity, capacities, methods and audited jobs.",
+
+  async fetch(options: UexOptions) {
+    const public_ = { ...options, tokenOptional: true };
+    const [yields, capacities, methods, audits] = await Promise.all([
+      uexFetch("refineries_yields", public_),
+      uexFetch("refineries_capacities", public_),
+      uexFetch("refineries_methods", public_),
+      uexFetch("refineries_audits", public_),
+    ]);
+    return {
+      // Yield value is the station's bonus or penalty in percent for that commodity.
+      yields: yields.map(trimRefineryRow),
+      capacities: capacities.map(trimRefineryRow),
+      // Ratings run 1 (low) to 3 (high): Dinyx is yield 3, cost 1, speed 1.
+      methods: methods.map(trimRefineryRow),
+      audits: audits.map(trimRefineryRow),
+      summary: {
+        yields: yields.length,
+        capacities: capacities.length,
+        methods: methods.length,
+        audits: audits.length,
+      },
+    };
+  },
+};
+
 export const UEX_DOMAINS: ApiDomain[] = [
   uexTerminalsDomain,
   uexCommoditiesDomain,
   uexVehiclePricesDomain,
+  uexRefineryDomain,
 ];

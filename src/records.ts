@@ -129,6 +129,17 @@ export function str(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Order names as a person reads them: numbers by value ("_2" before "_10"),
+ * case and punctuation ignored, so `"Quantainium" Water Bottle` files under Q
+ * and `agricium_ore` sits beside `Agricium`.
+ */
+const NAME_COLLATOR = new Intl.Collator("en", { numeric: true, sensitivity: "base", ignorePunctuation: true });
+
+export function compareNames(a: string, b: string): number {
+  return NAME_COLLATOR.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+}
+
 /** Index records by full name for reference resolution. */
 export function indexByName(records: GameRecord[]): Map<string, GameRecord> {
   return new Map(records.map((r) => [r.name, r]));

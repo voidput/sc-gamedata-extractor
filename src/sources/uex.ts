@@ -15,6 +15,11 @@ export interface UexOptions {
   baseUrl?: string;
   /** Injectable for tests. */
   fetchImpl?: typeof fetch;
+  /**
+   * The endpoint is public. A token is still sent when one is set, but its
+   * absence is not an error. A wrong token is: UEX denies it even here.
+   */
+  tokenOptional?: boolean;
 }
 
 export class MissingTokenError extends Error {
@@ -37,13 +42,13 @@ export async function uexFetch(
   options: UexOptions = {},
 ): Promise<unknown[]> {
   const token = options.token ?? process.env.UEXTOKEN;
-  if (!token) throw new MissingTokenError();
+  if (!token && !options.tokenOptional) throw new MissingTokenError();
 
   const doFetch = options.fetchImpl ?? fetch;
   const url = `${options.baseUrl ?? BASE_URL}/${endpoint}`;
 
   const response = await doFetch(url, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
 
   if (!response.ok) {

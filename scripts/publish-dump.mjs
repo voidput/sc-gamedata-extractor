@@ -9,8 +9,14 @@
  * Run after `npm run all`, from a checkout whose `data/` is the build you want
  * to publish. Always dry-run first — this pushes to a public repo.
  *
+ * Each tag also gets a GitHub release, labelled with the channel the build was
+ * extracted from: PTU-style channels are prereleases, and only LIVE is marked
+ * latest. Re-running against an already-published tag creates its release if
+ * it is missing, so older tags can be backfilled.
+ *
  *   node scripts/publish-dump.mjs --dry-run
  *   node scripts/publish-dump.mjs
+ *   node scripts/publish-dump.mjs --channel PTU   # when the extract predates the channel marker
  */
 
 import { execFileSync } from "node:child_process";
@@ -28,7 +34,16 @@ const REPO = process.env.SC_DUMPS_REPO || "voidput/sc-gamedata-dumps";
 // credential helper has to exist for this to work unattended.
 const REMOTE = process.env.SC_DUMPS_REMOTE || `git@github.com:${REPO}.git`;
 
+const EXTRACT_DIR = process.env.SC_EXTRACT_DIR || path.join(ROOT, "extracted-data");
+
 const dryRun = process.argv.includes("--dry-run");
+const channelFlag = (() => {
+  const i = process.argv.indexOf("--channel");
+  return i >= 0 ? process.argv[i + 1]?.toUpperCase() : undefined;
+})();
+
+/** Channels whose builds are test builds, published as GitHub prereleases. */
+const PRERELEASE_CHANNELS = new Set(["PTU", "EPTU", "TECH-PREVIEW"]);
 
 /**
  * Localisation is the one file carrying verbatim in-game prose — descriptions,
@@ -97,6 +112,72 @@ function resolveBuild(dumps) {
   return [...builds][0];
 }
 
+/**
+ * Channel and branch from the extract marker, trusted only when it describes
+ * the same build as the dumps: a later extract of another channel overwrites
+ * the marker without touching `data/`.
+ */
+function resolveOrigin(build) {
+  let marker = {};
+  try {
+    marker = JSON.parse(fs.readFileSync(path.join(EXTRACT_DIR, "_build.json"), "utf-8"));
+  } catch {
+    // No marker: fall back to the flag, then LIVE.
+  }
+  const matches = marker.build === build;
+  const channel = channelFlag ?? (matches ? marker.channel : undefined);
+  if (!channel) {
+    console.warn(`No channel recorded for ${build}; assuming LIVE. Pass --channel to override.`);
+  }
+  return { channel: channel ?? "LIVE", branch: matches ? marker.branch : undefined };
+}
+
+/** e.g. "4.10.2 LIVE (4.10.197.2878)", or "HOTFIX 1.0.191.55227" without a branch. */
+function releaseTitle(build, { channel, branch }) {
+  const patch = branch?.match(/(\d+(?:\.\d+)+)/)?.[1];
+  return patch ? `${patch} ${channel} (${build})` : `${channel} ${build}`;
+}
+
+function releaseNotes(build, { channel, branch }, dumps) {
+  const lines = [
+    `Parsed game data for Star Citizen build \`${build}\`.`,
+    "",
+    `- Channel: ${channel}`,
+    ...(branch ? [`- Branch: \`${branch}\``] : []),
+    "",
+    "| Dataset | Size |",
+    "| --- | ---: |",
+    ...dumps.map((d) => `| \`${d.file}\` | ${mb(d.size)} |`),
+  ];
+  return lines.join("\n");
+}
+
+function releaseFlags({ channel }) {
+  if (PRERELEASE_CHANNELS.has(channel)) return ["--prerelease"];
+  return channel === "LIVE" ? ["--latest"] : ["--latest=false"];
+}
+
+/** Create the tag's GitHub release unless it already has one. */
+function ensureRelease(build, origin, dumps) {
+  try {
+    execFileSync("gh", ["release", "view", build, "-R", REPO], { stdio: "pipe" });
+    console.log(`Release ${build} already exists.`);
+    return;
+  } catch {
+    // Not found: create it.
+  }
+  execFileSync(
+    "gh",
+    [
+      "release", "create", build, "-R", REPO, "--verify-tag",
+      "--title", releaseTitle(build, origin),
+      "--notes", releaseNotes(build, origin, dumps),
+      ...releaseFlags(origin),
+    ],
+    { stdio: "inherit" },
+  );
+}
+
 function git(args, options = {}) {
   return execFileSync("git", args, { cwd: WORK_DIR, encoding: "utf-8", ...options }).trim();
 }
@@ -107,11 +188,13 @@ function mb(bytes) {
 
 const dumps = readDumps();
 const build = resolveBuild(dumps);
+const origin = resolveOrigin(build);
 const totalOriginal = dumps.reduce((n, d) => n + d.original, 0);
 const totalPublished = dumps.reduce((n, d) => n + d.size, 0);
 
 console.log(`\nBuild:  ${build}`);
 console.log(`Repo:   ${REPO}`);
+console.log(`Release: ${releaseTitle(build, origin)} [${releaseFlags(origin).join(" ")}]`);
 console.log(`Files:  ${dumps.length}\n`);
 for (const d of dumps) {
   const note = d.size === d.original ? "" : `  (redacted from ${mb(d.original)})`;
@@ -148,8 +231,9 @@ if (!fs.existsSync(path.join(WORK_DIR, ".git"))) {
 // A build is immutable: republishing one would rewrite history SCMCP caches by sha.
 const existing = git(["tag", "--list", build]);
 if (existing) {
-  console.error(`Build ${build} is already published as a tag. Nothing to do.`);
-  process.exit(1);
+  console.log(`Build ${build} is already published as a tag.`);
+  ensureRelease(build, origin, dumps);
+  process.exit(0);
 }
 
 for (const name of fs.readdirSync(TEMPLATE_DIR)) {
@@ -192,5 +276,6 @@ if (!git(["tag", "--list", build])) {
 const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
 git(["push", "origin", `${branch}:main`]);
 git(["push", "origin", build]);
+ensureRelease(build, origin, dumps);
 
 console.log(`\nPublished ${build} to ${REPO}.`);
