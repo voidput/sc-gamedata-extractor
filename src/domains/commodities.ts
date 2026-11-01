@@ -24,17 +24,38 @@
  * (Stileron 950-998 shows as 972).
  */
 
-import { isPlaceholderName, localize, type Localization } from "../localization.js";
+import { isPlaceholderName, isUnresolved, localize, type Localization } from "../localization.js";
 import { at, compareNames, indexByRecordPath, num, refPath, refShortName, str, type GameRecord } from "../records.js";
 import type { Domain } from "./types.js";
+
+/** Localize, retrying with the `,P` suffix some keys carry only in that form. */
+function localizeKey(localization: Localization, value: unknown): string | undefined {
+  const text = localize(localization, value);
+  if (!isUnresolved(text) || typeof value !== "string") return text;
+  const suffixed = localize(localization, `${value},P`);
+  return isUnresolved(suffixed) ? text : suffixed;
+}
 
 /**
  * A localized name, or undefined for placeholders and unresolved keys. UI markup
  * is stripped: carbon dioxide is `CO<font size="%d">2</font>` in the table.
  */
 export function displayNameOf(localization: Localization, value: unknown): string | undefined {
-  const name = localize(localization, value)?.replace(/<[^>]*>/g, "").trim();
+  const name = localizeKey(localization, value)?.replace(/<[^>]*>/g, "").trim();
   return isPlaceholderName(name) ? undefined : name;
+}
+
+/**
+ * A localized description: markup stripped, the table's literal `\\n` turned
+ * into line breaks, placeholders and "<Name> description." stubs dropped.
+ */
+export function descriptionOf(localization: Localization, value: unknown): string | undefined {
+  const text = localizeKey(localization, value)
+    ?.replace(/<[^>]*>/g, "")
+    .replace(/\\n/g, "\n")
+    .trim();
+  // "Tritium description." is a stub left in the table, not a description.
+  return isPlaceholderName(text) || /^\S+ description\.?$/i.test(text ?? "") ? undefined : text;
 }
 
 export interface ResourceType {
@@ -42,6 +63,7 @@ export interface ResourceType {
   recordName: string;
   id: string;
   displayName?: string;
+  description?: string;
   /** Top-level group, e.g. "Metal". */
   group: string;
   /** Nested group path below the top level, e.g. ["UnrefinedOres"]. */
@@ -145,6 +167,7 @@ function parseResource(
     recordName,
     id: str(raw._RecordId_) ?? "",
     displayName: displayNameOf(localization, raw.displayName),
+    description: descriptionOf(localization, raw.description),
     group: groups[0] ?? "",
     subgroups: groups.slice(1),
     densityGramsPerCc: num(at(raw, "densityType.densityUnit.gramsPerCubicCentimeter")),
@@ -187,6 +210,8 @@ export interface CommodityItem {
   displayName?: string;
   /** The game's type label, e.g. "Gas", "Metal". */
   type?: string;
+  /** The resource's description; the cargo items carry none of their own. */
+  description?: string;
   /** Folder under entities/commodities, e.g. "halogens". */
   category: string;
   resource?: string;
@@ -286,6 +311,10 @@ export const commoditiesDomain: Domain = {
     const items = records
       .filter((r) => r.recordPath.includes("/entities/commodities/"))
       .map((r) => parseCommodityItem(r, localization))
+      .map((item) => {
+        const description = resources.find((r) => r.name === item.resource)?.description;
+        return description ? { ...item, description } : item;
+      })
       .sort((a, b) => compareNames(a.displayName ?? a.name, b.displayName ?? b.name));
     const damage = records
       .filter((r) => r.type === "CommodityDamageConfiguration")

@@ -102,6 +102,8 @@ export interface Refinable {
   rawDisplayName?: string;
   refined: string;
   refinedDisplayName?: string;
+  rawDescription?: string;
+  refinedDescription?: string;
   group: string;
   rawDensityGramsPerCc?: number;
   refinedDensityGramsPerCc?: number;
@@ -139,6 +141,8 @@ export const refiningDomain: Domain = {
           rawDisplayName: r.displayName,
           refined: r.refinesTo!,
           refinedDisplayName: refined?.displayName,
+          rawDescription: r.description,
+          refinedDescription: refined?.description,
           group: r.group,
           rawDensityGramsPerCc: r.densityGramsPerCc,
           refinedDensityGramsPerCc: refined?.densityGramsPerCc,

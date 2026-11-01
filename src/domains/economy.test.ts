@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { boxSizes, cargoDomain, parseCargoManifest } from "./cargo.js";
-import { commoditiesDomain, parseCommodityItem, parseResourceDatabase, scuOf } from "./commodities.js";
+import { commoditiesDomain, descriptionOf, parseCommodityItem, parseResourceDatabase, scuOf } from "./commodities.js";
 import { quantumDomain } from "./quantum.js";
 import { parseRatings, refiningDomain } from "./refining.js";
 import { salvageDomain } from "./salvage.js";
@@ -114,6 +114,18 @@ describe("resource database", () => {
   it("drops a name it cannot resolve rather than emitting the key", () => {
     const quant = parseResourceDatabase(database, strings).find((r) => r.name === "Raw_Quantainium");
     expect(quant?.displayName).toBeUndefined();
+  });
+});
+
+describe("descriptions", () => {
+  it("strips markup, turns the literal \\n into line breaks and drops placeholders", () => {
+    const strings = new Map([
+      ["ore_des", "Found near <b>volcanic</b> outcroppings.\\nUsed as an insulator. "],
+      ["ph_des", "<= PLACEHOLDER =>"],
+    ]);
+    expect(descriptionOf(strings, "@ore_des")).toBe("Found near volcanic outcroppings.\nUsed as an insulator.");
+    expect(descriptionOf(strings, "@ph_des")).toBeUndefined();
+    expect(descriptionOf(new Map([["t", "Tritium description."]]), "@t")).toBeUndefined();
   });
 });
 
