@@ -105,3 +105,129 @@ describe("componentsDomain.parse", () => {
     expect(result.summary).toEqual({ shields: 2, quantumDrives: 1 });
   });
 });
+
+function shipItemOfType(
+  shortName: string,
+  type: string,
+  extra: Record<string, unknown>[],
+  path = "x",
+): GameRecord {
+  return {
+    name: `EntityClassDefinition.${shortName}`,
+    shortName,
+    id: `id-${shortName}`,
+    type: "EntityClassDefinition",
+    recordPath: `libs/foundry/records/entities/scitem/ships/${path}/${shortName}`,
+    value: {
+      Components: [
+        {
+          _Type_: "SAttachableComponentParams",
+          AttachDef: {
+            Type: type,
+            SubType: "UNDEFINED",
+            Size: 1,
+            Grade: 3,
+            Manufacturer: "file://./x/scitemmanufacturer.aegs.json",
+            Localization: { Name: "@item_NameShield" },
+          },
+        },
+        ...extra,
+      ],
+    },
+  };
+}
+
+const online = (deltas: Record<string, unknown>[]) => ({
+  _Type_: "ItemResourceComponentParams",
+  states: [{ name: "Online", deltas, signatureParams: { EMSignature: { nominalSignature: 7920 } } }],
+});
+
+describe("parseComponent categories without a stats struct", () => {
+  it("reads a power plant's output off the resource network", () => {
+    const plant = shipItemOfType("POWR_Test", "PowerPlant", [
+      online([{ generation: { resource: "Power", resourceAmountPerSecond: { units: 16 } } }]),
+      { _Type_: "SHealthComponentParams", Health: 270 },
+      { _Type_: "SEntityPhysicsControllerParams", PhysType: { Mass: 250 } },
+      { _Type_: "SDistortionParams", Maximum: 4100 },
+    ]);
+    expect(parseComponent(plant, localization)).toMatchObject({
+      category: "powerPlants",
+      manufacturer: "AEGS",
+      em: 7920,
+      health: 270,
+      mass: 250,
+      distortionMax: 4100,
+      durability: { health: 270 },
+      stats: { powerOutput: 16 },
+    });
+  });
+
+  it("sorts a countermeasure launcher before the weapon struct it also carries", () => {
+    const launcher = shipItemOfType("CML_Test", "WeaponDefensive", [
+      { _Type_: "SCItemWeaponComponentParams", fireActions: [] },
+      { _Type_: "SAmmoContainerComponentParams", maxAmmoCount: 48, ammoParamsRecord: "file://./x/ammoparams.behr_flare.json" },
+    ]);
+    expect(parseComponent(launcher, localization)).toMatchObject({
+      category: "countermeasures",
+      stats: { maxAmmoCount: 48 },
+      detail: { ammo: "behr_flare" },
+    });
+  });
+
+  it("keeps a shield's resistance table as structured detail", () => {
+    const shield = shipItem("SHLD_Test", "SCItemShieldGeneratorParams", {
+      MaxShieldHealth: 3168,
+      ShieldResistance: [{ Min: 0, Max: 0.25 }],
+      ShieldAbsorption: [{ Min: 0, Max: 0.45 }, { Min: 1, Max: 1 }],
+    });
+    expect(parseComponent(shield, localization)?.detail).toEqual({
+      resistance: { physical: { min: 0, max: 0.25 } },
+      absorption: { physical: { min: 0, max: 0.45 }, energy: { min: 1, max: 1 } },
+    });
+  });
+
+  it("drops the unbounded jump range sentinel", () => {
+    const drive = shipItem("QDRV_Test", "SCItemQuantumDriveParams", {
+      jumpRange: 3.402823e38,
+      params: { driveSpeed: 161410900, spoolUpTime: 4.4 },
+    });
+    expect(parseComponent(drive, localization)?.stats).toEqual({ driveSpeed: 161410900, spoolUpTime: 4.4 });
+  });
+
+  it("resolves a cargo grid's capacity through its inventory container", () => {
+    const grid = shipItemOfType("DRAK_Cutlass_CargoGrid_Main", "CargoGrid", [
+      {
+        _Type_: "SCItemInventoryContainerComponentParams",
+        containerParams: "file://./x/inventorycontainers/ships/drak_cutlass_cargogrid_main.json",
+      },
+    ]);
+    const container: GameRecord = {
+      name: "InventoryContainer.drak_cutlass_cargogrid_main",
+      shortName: "drak_cutlass_cargogrid_main",
+      id: "c",
+      type: "InventoryContainer",
+      recordPath: "libs/foundry/records/inventorycontainers/ships/drak_cutlass_cargogrid_main",
+      value: { interiorDimensions: { _Type_: "Vec3", x: 5, y: 6.25, z: 2.5 } },
+    };
+    const parsed = parseComponent(grid, localization, {
+      localization,
+      containers: new Map([["drak_cutlass_cargogrid_main", container]]),
+    });
+    expect(parsed?.stats).toEqual({ scu: 40 });
+    expect(parsed?.detail).toMatchObject({ container: "drak_cutlass_cargogrid_main" });
+  });
+
+  it("counts the gun slots on a swappable mount and ignores a ship's own turret", () => {
+    const ports = {
+      _Type_: "SItemPortContainerComponentParams",
+      Ports: [{ Name: "hardpoint_class_2", MaxSize: 3, Types: [{ Type: "WeaponGun" }] }],
+    };
+    const mount = shipItemOfType("Mount_Gimbal_S3", "Turret", [ports], "weapon_mounts/gimbal");
+    expect(parseComponent(mount, localization)).toMatchObject({
+      category: "mounts",
+      stats: { gunCount: 1, gunSize: 3 },
+    });
+    const turret = shipItemOfType("DRAK_Cutlass_Turret", "Turret", [ports, { _Type_: "SCItemTurretParams" }], "turret");
+    expect(parseComponent(turret, localization)).toBeUndefined();
+  });
+});

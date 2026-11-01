@@ -11,7 +11,7 @@
  * is not the weapon's damage.
  */
 
-import { num, type GameRecord } from "../records.js";
+import { at, num, type GameRecord } from "../records.js";
 import type { Domain } from "./types.js";
 
 /** The five damage types the game models. */
@@ -35,6 +35,21 @@ export interface Ammo {
   range?: number;
   damage?: DamageInfo;
   damageTotal?: number;
+  /** Metres of material a round punches through, the "pen" a loadout site shows. */
+  penetration?: number;
+  /** Radius of the penetration cone at the entry and far end, metres. */
+  penetrationRadius?: { near?: number; far?: number };
+  /**
+   * Damage falloff with distance, per type. Damage holds until `minDistance`,
+   * then drops by `perMeter` until it reaches `floor`. Only personal-weapon
+   * ammo carries this; ship ammo does full damage to the end of its range.
+   */
+  falloff?: Record<string, { minDistance: number; perMeter: number; floor: number }>;
+  /**
+   * How a round passes through thin geometry: the thickest material it can
+   * cross, and the damage fraction kept at each pierce level.
+   */
+  pierce?: { maxThickness?: number; level1?: number; level2?: number; level3?: number };
 }
 
 const DAMAGE_FIELDS: [keyof DamageInfo, string][] = [
@@ -84,6 +99,33 @@ export function findDamage(value: unknown): DamageInfo | undefined {
   return undefined;
 }
 
+/** Per-type falloff from `BulletDamageDropParams`, keeping only types that fall off. */
+export function parseFalloff(value: unknown): Ammo["falloff"] {
+  if (!value || typeof value !== "object") return undefined;
+  const out: NonNullable<Ammo["falloff"]> = {};
+  for (const [key, field] of DAMAGE_FIELDS) {
+    const perMeter = num(at(value, `damageDropPerMeter.${field}`)) ?? 0;
+    if (perMeter <= 0) continue;
+    out[key] = {
+      minDistance: num(at(value, `damageDropMinDistance.${field}`)) ?? 0,
+      perMeter,
+      floor: num(at(value, `damageDropMinDamage.${field}`)) ?? 0,
+    };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function parsePierce(value: unknown): Ammo["pierce"] {
+  if (!value || typeof value !== "object") return undefined;
+  const pierce = {
+    maxThickness: num(at(value, "maxPenetrationThickness")),
+    level1: num(at(value, "damageFalloffLevel1")),
+    level2: num(at(value, "damageFalloffLevel2")),
+    level3: num(at(value, "damageFalloffLevel3")),
+  };
+  return Object.values(pierce).some((v) => v) ? pierce : undefined;
+}
+
 export function parseAmmo(record: GameRecord): Ammo {
   const v = record.value;
   const damage = findDamage(v.projectileParams) ?? findDamage(v);
@@ -104,6 +146,14 @@ export function parseAmmo(record: GameRecord): Ammo {
     range: speed && lifetime ? Math.round(speed * lifetime) : undefined,
     damage,
     damageTotal: total,
+    penetration: num(at(v, "projectileParams.penetrationParams.basePenetrationDistance")),
+    penetrationRadius: (() => {
+      const near = num(at(v, "projectileParams.penetrationParams.nearRadius"));
+      const far = num(at(v, "projectileParams.penetrationParams.farRadius"));
+      return near !== undefined || far !== undefined ? { near, far } : undefined;
+    })(),
+    falloff: parseFalloff(at(v, "projectileParams.damageDropParams")),
+    pierce: parsePierce(at(v, "projectileParams.pierceabilityParams")),
   };
 }
 

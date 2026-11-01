@@ -16,3 +16,12 @@ overlay-sources.json
 
 # Checkout of the public dumps repo, managed by scripts/publish-dump.mjs.
 .publish-repo/
+
+# ephemeral extraction output
+.tmp/
+
+# Infographic exports, regenerable from data/.
+exports/
+
+# Per-build dataset copies kept by parse, for patch-over-patch diffs.
+snapshots/

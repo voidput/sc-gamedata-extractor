@@ -13,7 +13,9 @@
     "all": "node dist/cli.js all",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run",
-    "publish-dump": "node scripts/publish-dump.mjs"
+    "publish-dump": "node scripts/publish-dump.mjs",
+    "export": "node scripts/export-infographic.mjs && uv run -q --with openpyxl python scripts/csv-to-xlsx.py exports/$(node -p \"require('./data/game-weapons.json')._build\")",
+    "changes": "node dist/cli.js changes"
   },
   "license": "Apache-2.0",
   "dependencies": {
