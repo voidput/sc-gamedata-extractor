@@ -17,6 +17,12 @@
  *   node scripts/publish-dump.mjs --dry-run
  *   node scripts/publish-dump.mjs
  *   node scripts/publish-dump.mjs --channel PTU   # when the extract predates the channel marker
+ *   node scripts/publish-dump.mjs --republish     # replace an already-published build
+ *
+ * `--republish` is for adding datasets to a build already out, never for
+ * swapping in a different build: the dumps must carry the same build string.
+ * It commits on top of main, so history is not rewritten, then moves the tag
+ * with a lease on its current remote target and refreshes the release notes.
  */
 
 import { execFileSync } from "node:child_process";
@@ -37,6 +43,7 @@ const REMOTE = process.env.SC_DUMPS_REMOTE || `git@github.com:${REPO}.git`;
 const EXTRACT_DIR = process.env.SC_EXTRACT_DIR || path.join(ROOT, "extracted-data");
 
 const dryRun = process.argv.includes("--dry-run");
+const republish = process.argv.includes("--republish");
 const channelFlag = (() => {
   const i = process.argv.indexOf("--channel");
   return i >= 0 ? process.argv[i + 1]?.toUpperCase() : undefined;
@@ -228,13 +235,16 @@ if (!fs.existsSync(path.join(WORK_DIR, ".git"))) {
   }
 }
 
-// A build is immutable: republishing one would rewrite history SCMCP caches by sha.
+// A build is immutable unless --republish says otherwise. Republishing never
+// rewrites history: it adds a commit on top of main and moves the tag to it.
 const existing = git(["tag", "--list", build]);
-if (existing) {
-  console.log(`Build ${build} is already published as a tag.`);
+if (existing && !republish) {
+  console.log(`Build ${build} is already published as a tag. Pass --republish to replace it.`);
   ensureRelease(build, origin, dumps);
   process.exit(0);
 }
+// The tag's current remote target, for the force-with-lease when moving it.
+const remoteTag = existing ? git(["ls-remote", "origin", `refs/tags/${build}`]).split(/\s+/)[0] : "";
 
 for (const name of fs.readdirSync(TEMPLATE_DIR)) {
   const target = path.join(WORK_DIR, name);
@@ -260,7 +270,10 @@ const hasCommits = (() => {
 })();
 
 if (git(["status", "--porcelain"])) {
-  git(["commit", "-m", build]);
+  git(["commit", "-m", existing ? `${build} (republished)` : build]);
+} else if (existing) {
+  console.error(`Build ${build} is identical to what is already published. Nothing to republish.`);
+  process.exit(1);
 } else if (!hasCommits) {
   console.error(`Build ${build} is identical to what is already published. Nothing to commit.`);
   process.exit(1);
@@ -269,13 +282,24 @@ if (git(["status", "--porcelain"])) {
 // Annotated, and always with a message: a git config that defaults tags to
 // annotated (tag.annotate / forceSignAnnotated) makes a bare `git tag` fail.
 // Tagging separately from the commit also lets a half-finished run resume.
-if (!git(["tag", "--list", build])) {
+if (existing) {
+  git(["tag", "-f", "-a", build, "-m", `${build} (republished)`]);
+} else if (!git(["tag", "--list", build])) {
   git(["tag", "-a", build, "-m", build]);
 }
 
 const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]);
 git(["push", "origin", `${branch}:main`]);
-git(["push", "origin", build]);
+if (existing) {
+  git(["push", `--force-with-lease=refs/tags/${build}:${remoteTag}`, "origin", `refs/tags/${build}`]);
+  execFileSync(
+    "gh",
+    ["release", "edit", build, "-R", REPO, "--title", releaseTitle(build, origin), "--notes", releaseNotes(build, origin, dumps)],
+    { stdio: "inherit" },
+  );
+} else {
+  git(["push", "origin", build]);
+}
 ensureRelease(build, origin, dumps);
 
-console.log(`\nPublished ${build} to ${REPO}.`);
+console.log(`\n${existing ? "Republished" : "Published"} ${build} to ${REPO}.`);

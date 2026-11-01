@@ -7,6 +7,7 @@
 #   make live | ptu | hotfix   # shorthand for CHANNEL=LIVE / PTU / HOTFIX
 #   make changes FROM=4.10     # buffs and nerfs vs a previous build
 #   make publish-dry           # then: make publish (tag + GitHub release)
+#   make republish             # add datasets to a build already published
 #
 # Optional overrides: SC_ROOT, CHANNEL, P4K, STARBREAKER, EXTRACT_DIR, OUT,
 # DOMAINS, FROM, TO, PUBLISH_CHANNEL. P4K defaults to $SC_DATA_P4K, else
@@ -31,7 +32,7 @@ FLAGS := --channel $(CHANNEL) --extract-dir $(EXTRACT_DIR) --out $(OUT) \
 SRC := $(shell find src -name '*.ts' ! -name '*.test.ts') tsconfig.json
 
 .PHONY: gamedata all live ptu hotfix extract parse build install test lint \
-	check changes export publish publish-dry builds clean help p4k starbreaker
+	check changes export publish publish-dry republish builds clean help p4k starbreaker
 
 gamedata: all
 
@@ -93,6 +94,10 @@ publish-dry: build
 
 publish: build
 	$(PUBLISH)
+
+# Replace an already-published build with the current data/ (same build only).
+republish: build
+	$(PUBLISH) --republish
 
 builds: build
 	$(CLI) builds --out $(OUT)
