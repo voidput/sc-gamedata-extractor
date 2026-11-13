@@ -10,7 +10,7 @@
 #   make republish             # add datasets to a build already published
 #
 # Optional overrides: SC_ROOT, CHANNEL, P4K, STARBREAKER, EXTRACT_DIR, OUT,
-# DOMAINS, FROM, TO, PUBLISH_CHANNEL. P4K defaults to $SC_DATA_P4K, else
+# DOMAINS, FROM, TO, PUBLISH_CHANNEL, PATCH. P4K defaults to $SC_DATA_P4K, else
 # $(SC_ROOT)/$(CHANNEL)/Data.p4k.
 
 SC_ROOT     ?= /mnt/games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen
@@ -85,9 +85,10 @@ export: build
 	npm run export
 
 # Tags the build and creates its GitHub release (PTU = prerelease). The channel
-# comes from the extract marker; PUBLISH_CHANNEL overrides it.
+# comes from the extract marker; PUBLISH_CHANNEL overrides it. PATCH=4.10.3
+# names the patch in the release title when the manifest branch gets it wrong.
 PUBLISH := SC_EXTRACT_DIR=$(EXTRACT_DIR) node scripts/publish-dump.mjs \
-	$(if $(PUBLISH_CHANNEL),--channel $(PUBLISH_CHANNEL))
+	$(if $(PUBLISH_CHANNEL),--channel $(PUBLISH_CHANNEL)) $(if $(PATCH),--patch $(PATCH))
 
 publish-dry: build
 	$(PUBLISH) --dry-run

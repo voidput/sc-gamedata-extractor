@@ -17,6 +17,7 @@
  *   node scripts/publish-dump.mjs --dry-run
  *   node scripts/publish-dump.mjs
  *   node scripts/publish-dump.mjs --channel PTU   # when the extract predates the channel marker
+ *   node scripts/publish-dump.mjs --patch 4.10.3  # when the branch names the wrong patch
  *   node scripts/publish-dump.mjs --republish     # replace an already-published build
  *
  * `--republish` is for adding datasets to a build already out, never for
@@ -47,6 +48,18 @@ const republish = process.argv.includes("--republish");
 const channelFlag = (() => {
   const i = process.argv.indexOf("--channel");
   return i >= 0 ? process.argv[i + 1]?.toUpperCase() : undefined;
+})();
+// The manifest branch does not always name the patch players see (4.10.3
+// shipped from `sc-alpha-4.10.0`), so the release title can be told outright.
+const patchFlag = (() => {
+  const i = process.argv.indexOf("--patch");
+  if (i < 0) return undefined;
+  const value = process.argv[i + 1];
+  if (!value || !/^\d+(\.\d+)+$/.test(value)) {
+    console.error(`--patch needs a version like 4.10.3, got: ${value ?? "(nothing)"}`);
+    process.exit(1);
+  }
+  return value;
 })();
 
 /** Channels whose builds are test builds, published as GitHub prereleases. */
@@ -141,7 +154,7 @@ function resolveOrigin(build) {
 
 /** e.g. "4.10.2 LIVE (4.10.197.2878)", or "HOTFIX 1.0.191.55227" without a branch. */
 function releaseTitle(build, { channel, branch }) {
-  const patch = branch?.match(/(\d+(?:\.\d+)+)/)?.[1];
+  const patch = patchFlag ?? branch?.match(/(\d+(?:\.\d+)+)/)?.[1];
   return patch ? `${patch} ${channel} (${build})` : `${channel} ${build}`;
 }
 
@@ -150,6 +163,7 @@ function releaseNotes(build, { channel, branch }, dumps) {
     `Parsed game data for Star Citizen build \`${build}\`.`,
     "",
     `- Channel: ${channel}`,
+    ...(patchFlag ? [`- Patch: ${patchFlag}`] : []),
     ...(branch ? [`- Branch: \`${branch}\``] : []),
     "",
     "| Dataset | Size |",
