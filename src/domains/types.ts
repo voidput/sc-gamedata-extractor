@@ -6,6 +6,8 @@ export interface ParseContext {
   records: GameRecord[];
   /** The game's string table. Empty if global.ini was not extracted. */
   localization: Localization;
+  /** Where extraction wrote, for domains that read archive files (`files`). */
+  extractDir?: string;
 }
 
 /**
@@ -23,6 +25,17 @@ export interface Domain {
   name: string;
   description: string;
   filters: string[];
+  /**
+   * Archive file globs to extract as-is, for data DataCore does not hold. They
+   * land under the extraction directory at their archive path.
+   */
+  files?: string[];
+  /**
+   * Exact archive paths to extract once `files` are on disk, for files that are
+   * only discovered by reading the first ones. Called again after each batch
+   * lands, until it returns nothing.
+   */
+  moreFiles?(extractDir: string): string[];
   needsLocalization?: boolean;
   parse(context: ParseContext): Record<string, unknown>;
 }

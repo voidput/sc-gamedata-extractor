@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ammoDomain, findDamage, parseAmmo } from "./ammo.js";
 import { containersDomain, parseContainer } from "./containers.js";
-import { buildTypeNames, parseLocation, starmapDomain } from "./starmap.js";
+import { buildAmenityNames, buildLocations, buildTypeNames, parseLocation, starmapDomain } from "./starmap.js";
 import { organisationOf, reputationDomain } from "./reputation.js";
 import { parseVehicle } from "./ships.js";
 import { parseGlobalIni } from "../localization.js";
@@ -136,6 +136,87 @@ describe("starmap types", () => {
       localization: empty,
     }) as Record<string, never>;
     expect(result.summary).toMatchObject({ locations: 2, visible: 1, hidden: 1 });
+  });
+
+  it("gives stations their zones and leaves a planet's surface zones off it", () => {
+    const placed = (id: string) => ({ starMapRecord: id, position: [0, 0, 0] as [number, number, number], depth: 0, rotation: [1, 0, 0, 0] as [number, number, number, number] });
+    const typeRecord = rec("StarMapObjectTypes", "StarMapObjectTypes", {
+      types: [
+        { _RecordId_: "t-planet", name: "Planet" },
+        { _RecordId_: "t-station", name: "Manmade" },
+      ],
+    });
+    const station = rec("StarMapObject", "Station", { type: { _RecordId_: "t-station", _RecordName_: "StarMapObjectType.t-station" } });
+    const planet = rec("StarMapObject", "World", { type: { _RecordId_: "t-planet", _RecordName_: "StarMapObjectType.t-planet" } });
+    const zone = { ...rec("EntityClassDefinition", "MonitoredZone", { Components: [{ _Type_: "MonitoredZoneParams", radiusKm: 30000 }] }) };
+    const locations = buildLocations(
+      [typeRecord, station, planet, zone],
+      empty,
+      new Map([
+        [station.id, placed(station.id)],
+        [planet.id, placed(planet.id)],
+      ]),
+      new Map([
+        [station.id, { armisticeRadius: 12000, monitored: true as const }],
+        [planet.id, { armisticeRadius: 12000, monitored: true as const }],
+      ]),
+    );
+    const byName = new Map(locations.map((l) => [l.recordName, l]));
+    expect(byName.get(station.name)).toMatchObject({ armisticeRadius: 12000, monitoredRadius: 30_000_000 });
+    expect(byName.get(planet.name)?.armisticeRadius).toBeUndefined();
+    expect(byName.get(planet.name)?.monitoredRadius).toBeUndefined();
+    expect(byName.get(station.name)?.jammerRadius).toBeUndefined();
+  });
+
+  it("gives an outlaw station its jammer dead zone", () => {
+    const placed = (id: string) => ({ starMapRecord: id, position: [0, 0, 0] as [number, number, number], depth: 0, rotation: [1, 0, 0, 0] as [number, number, number, number] });
+    const typeRecord = rec("StarMapObjectTypes", "StarMapObjectTypes", { types: [{ _RecordId_: "t-station", name: "Manmade" }] });
+    const type = { _RecordId_: "t-station", _RecordName_: "StarMapObjectType.t-station" };
+    const own = rec("StarMapObject", "OutlawA", { type });
+    const inherited = rec("StarMapObject", "OutlawB", { type });
+    const jammer = rec("EntityClassDefinition", "MonitorZoneJammer", { Components: [{ _Type_: "MonitoredZoneParams", radiusKm: 40, strength: -10 }] });
+    const locations = buildLocations(
+      [typeRecord, own, inherited, jammer],
+      empty,
+      new Map([
+        [own.id, placed(own.id)],
+        [inherited.id, placed(inherited.id)],
+      ]),
+      new Map([
+        [own.id, { jammer: { radius: 35_000 } }],
+        [inherited.id, { jammer: {} }],
+      ]),
+    );
+    const byName = new Map(locations.map((l) => [l.recordName, l]));
+    expect(byName.get(own.name)?.jammerRadius).toBe(35_000);
+    expect(byName.get(inherited.name)?.jammerRadius).toBe(40_000);
+  });
+
+  it("names amenities instead of leaving their ids", () => {
+    const amenityTypes = buildAmenityNames([
+      rec("StarMapAmenityTypes", "StarMapAmenityTypes", { amenityTypes: [{ _RecordId_: "a-1", name: "Refinery" }] }),
+    ]);
+    const location = parseLocation(
+      rec("StarMapObject", "Station", {
+        amenities: [{ _RecordName_: "StarMapAmenityTypeEntry.a-1" }, { _RecordName_: "StarMapAmenityTypeEntry.a-9" }],
+      }),
+      empty,
+      new Map(),
+      new Map(),
+      amenityTypes,
+    );
+    expect(location.amenities).toEqual(["Refinery", "a-9"]);
+  });
+
+  it("carries a record's quantum travel geometry", () => {
+    const location = parseLocation(
+      rec("StarMapObject", "Hurston", {
+        quantumTravelData: { obstructionRadius: 1008900, arrivalRadius: 1050000, adoptionRadius: 128354900 },
+      }),
+      empty,
+    );
+    expect(location.quantum).toMatchObject({ obstructionRadius: 1008900, arrivalRadius: 1050000 });
+    expect(parseLocation(rec("StarMapObject", "Bare", {}), empty).quantum).toBeUndefined();
   });
 });
 

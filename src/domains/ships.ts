@@ -150,6 +150,8 @@ export interface Loadout {
   powerPlants?: LoadoutItem[];
   coolers?: LoadoutItem[];
   quantumDrives?: LoadoutItem[];
+  /** Quantum snares and dampeners: what makes a ship an interdictor. */
+  quantumEnforcement?: LoadoutItem[];
   jumpDrives?: LoadoutItem[];
   radars?: LoadoutItem[];
   armor?: LoadoutItem;
@@ -368,6 +370,9 @@ export function parseLoadout(
         break;
       case "QuantumDrive":
         push(loadout, "quantumDrives", base);
+        break;
+      case "QuantumInterdictionGenerator":
+        push(loadout, "quantumEnforcement", base);
         break;
       case "JumpDrive":
         push(loadout, "jumpDrives", base);

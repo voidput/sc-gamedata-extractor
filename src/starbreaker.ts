@@ -157,6 +157,62 @@ export async function extractRecords(
 }
 
 /**
+ * Extract archive files matching a glob to `outDir`, at their archive path.
+ * For data that is not a DataCore record, such as object containers.
+ */
+export async function extractFiles(
+  config: StarBreakerConfig,
+  filter: string,
+  outDir: string,
+): Promise<{ filter: string; files: number }> {
+  const output = await run(config.bin, [
+    "p4k",
+    "extract",
+    "--p4k",
+    config.p4k,
+    "--output",
+    outDir,
+    "--filter",
+    filter,
+  ]);
+
+  const match = output.match(/Extracted (\d+)\/\d+ files/);
+  return { filter, files: match ? Number(match[1]) : 0 };
+}
+
+/**
+ * Extract exact archive paths in one pass over the archive. Paths match
+ * case-insensitively with either separator, since the archive spells its paths
+ * with backslashes and its documents refer to them with slashes.
+ */
+export async function extractPaths(
+  config: StarBreakerConfig,
+  paths: string[],
+  outDir: string,
+): Promise<{ files: number }> {
+  if (paths.length === 0) return { files: 0 };
+  const escaped = paths.map((p) =>
+    p
+      .split(/[\\/]/)
+      .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+      .join("[\\\\/]"),
+  );
+  const output = await run(config.bin, [
+    "p4k",
+    "extract",
+    "--p4k",
+    config.p4k,
+    "--output",
+    outDir,
+    "--regex",
+    `(?i)^(?:${escaped.join("|")})$`,
+  ]);
+
+  const match = output.match(/Extracted (\d+)\/\d+ files/);
+  return { files: match ? Number(match[1]) : 0 };
+}
+
+/**
  * Languages the game ships a string table for. The directory name is the key.
  */
 export const LANGUAGES = [

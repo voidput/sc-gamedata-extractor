@@ -38,7 +38,7 @@ import type { ApiDomain, Domain } from "./domains/types.js";
 import { matchesAny } from "./glob.js";
 import { loadLocalization } from "./localization.js";
 import { loadRecords } from "./records.js";
-import { extractLocalization, extractRecords, type StarBreakerConfig } from "./starbreaker.js";
+import { extractFiles, extractLocalization, extractPaths, extractRecords, type StarBreakerConfig } from "./starbreaker.js";
 
 /**
  * Only domains verified against a real extraction are registered. A parser that
@@ -155,6 +155,27 @@ export async function extract(
     results.push(result);
   }
 
+  // Archive files a domain reads directly, such as object containers.
+  for (const filter of new Set(domains.flatMap((d) => d.files ?? []))) {
+    log(`  extracting files ${filter}`);
+    const result = await extractFiles(config, filter, extractDir);
+    log(`    ${result.files} files`);
+  }
+
+  // Files only discoverable by reading the ones above, and then the ones those
+  // name in turn. Bounded: a domain that keeps asking for files it never gets
+  // would otherwise loop.
+  for (const domain of domains) {
+    for (let round = 0; round < 4; round++) {
+      const more = domain.moreFiles?.(extractDir) ?? [];
+      if (more.length === 0) break;
+      log(`  extracting ${more.length} files referenced by ${domain.name}`);
+      const result = await extractPaths(config, more, extractDir);
+      log(`    ${result.files} files`);
+      if (result.files === 0) break;
+    }
+  }
+
   // Display names are localization keys, so any domain surfacing them needs the
   // string table alongside the records.
   if (language || domains.some((d) => d.needsLocalization)) {
@@ -209,7 +230,7 @@ export async function parse(
       );
     }
 
-    const body = domain.parse({ records: scoped, localization });
+    const body = domain.parse({ records: scoped, localization, extractDir });
     const file = path.join(outDir, `${domain.name}.json`);
 
     await fs.writeFile(
