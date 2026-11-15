@@ -27,8 +27,10 @@ import { isPlaceholderName, localize, type Localization } from "../localization.
 import { at, compareNames, indexByRecordPath, num, refPath, refShortName, str, type GameRecord } from "../records.js";
 import {
   loadPlacements,
+  loadSpins,
   loadZones,
   unextractedLocationContainers,
+  type BodySpin,
   type ContainerZones,
   type PlacedContainer,
 } from "../socpak.js";
@@ -55,6 +57,19 @@ export interface Location {
   amenities?: string[];
   /** Absolute position in the system frame, metres, star at the origin. */
   position?: { x: number; y: number; z: number };
+  /**
+   * For a place that turns with a planet or moon, on its surface or in low orbit inside its
+   * rotating zone: where it sits from the body's centre, metres, in the system's axes with
+   * the body unturned. The body turns about its z axis, so this, like `position` for such a
+   * place, is one instant of a rotation: the latitude holds, the direction does not.
+   */
+  local?: { x: number; y: number; z: number };
+  /** With `local`: record name of the body it turns with. */
+  turnsWith?: string;
+  /** Hours a planet or moon takes to turn once. */
+  rotationHours?: number;
+  /** Radius of a planet's or moon's rotating zone, metres: what sits inside turns with it. */
+  gridRadius?: number;
   /** Quantum travel geometry, metres from the object's centre. */
   quantum?: QuantumGeometry;
   /** Radius of the armistice zone around the location, metres. */
@@ -234,6 +249,7 @@ export function buildLocations(
   localization: Localization,
   placements: Map<string, PlacedContainer> = new Map(),
   zones: Map<string, ContainerZones> = new Map(),
+  spins: Map<string, BodySpin> = new Map(),
 ): Location[] {
   const monitored = zones.size > 0 ? monitoredRadius(records) : 0;
   const typeNames = buildTypeNames(records);
@@ -247,6 +263,12 @@ export function buildLocations(
 
   const byId = new Map(locations.map((l) => [l.id, l]));
   for (const location of locations) {
+    const spin = spins.get(location.id);
+    if (spin && (location.type === "Planet" || location.type === "Moon")) {
+      location.rotationHours = spin.rotationHours;
+      if (spin.gridRadius) location.gridRadius = spin.gridRadius;
+    }
+
     const placed = placements.get(location.id);
     if (!placed) continue;
     const [x, y, z] = placed.position;
@@ -256,9 +278,16 @@ export function buildLocations(
     // rotation, not a place in space.
     const body = placed.parentRecord ? byId.get(placed.parentRecord) : undefined;
     const bodyRadius = body?.quantum?.obstructionRadius;
-    if (bodyRadius && placed.parentPosition) {
+    if (body && placed.parentPosition) {
       const [px, py, pz] = placed.parentPosition;
-      if (Math.hypot(x - px, y - py, z - pz) < bodyRadius) continue;
+      const out = Math.hypot(x - px, y - py, z - pz);
+      // Inside the body's rotating zone it turns with the body, in orbit as on the ground.
+      const grid = placed.parentRecord ? spins.get(placed.parentRecord)?.gridRadius : undefined;
+      if (grid && out < grid) {
+        location.local = { x: round(x - px), y: round(y - py), z: round(z - pz) };
+        location.turnsWith = body.recordName;
+      }
+      if (bodyRadius && out < bodyRadius) continue;
     }
     location.position = { x: round(x), y: round(y), z: round(z) };
 
@@ -305,7 +334,8 @@ export const starmapDomain: Domain = {
     const typeNames = buildTypeNames(records);
     const placements = extractDir ? loadPlacements(extractDir) : new Map<string, PlacedContainer>();
     const zones = extractDir ? loadZones(extractDir, placements) : new Map<string, ContainerZones>();
-    const locations = buildLocations(records, localization, placements, zones);
+    const spins = extractDir ? loadSpins(extractDir, placements) : new Map<string, BodySpin>();
+    const locations = buildLocations(records, localization, placements, zones, spins);
 
     const visible = locations.filter((l) => !l.hiddenInStarmap);
 
@@ -322,6 +352,8 @@ export const starmapDomain: Domain = {
         visible: visible.length,
         hidden: locations.length - visible.length,
         positioned: locations.filter((l) => l.position).length,
+        turning: locations.filter((l) => l.local).length,
+        rotating: locations.filter((l) => l.rotationHours).length,
         armistice: locations.filter((l) => l.armisticeRadius).length,
         monitored: locations.filter((l) => l.monitoredRadius).length,
         jammed: locations.filter((l) => l.jammerRadius).length,

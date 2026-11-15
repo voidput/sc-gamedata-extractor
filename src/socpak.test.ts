@@ -2,7 +2,7 @@ import zlib from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 
-import { parseContainerXml, readContainerXml, readZip, rotate } from "./socpak.js";
+import { parseContainerXml, readContainerXml, readSpin, readZip, rotate } from "./socpak.js";
 
 /** A minimal zip: local headers, central directory, end record. */
 function zip(files: { name: string; localName?: string; data: string; deflate?: boolean }[]): Buffer {
@@ -110,5 +110,15 @@ describe("container placement", () => {
     // A sibling after a nested child is back at the root.
     expect(by.get("After")).toMatchObject({ depth: 0, position: [5, 5, 5] });
     expect(by.get("After")?.parent).toBeUndefined();
+  });
+});
+
+describe("readSpin", () => {
+  it("reads a body's rotation period and rotating zone, and ignores a document without one", () => {
+    const body = '<ObjectContainer name="stanton1" gridRadius="2000000" radius="1200000"><Entity label="stanton1" planetRadius="1000000" planetRotationSpeed="2.48" planetAxis="0,0,1"/></ObjectContainer>';
+    expect(readSpin(body)).toEqual({ rotationHours: 2.48, gridRadius: 2_000_000 });
+    expect(readSpin('<Entity planetRotationSpeed="5.1"/>')).toEqual({ rotationHours: 5.1 });
+    expect(readSpin('<ObjectContainer gridRadius="500"><Entity label="station"/></ObjectContainer>')).toBeUndefined();
+    expect(readSpin('<Entity planetRotationSpeed="0"/>')).toBeUndefined();
   });
 });

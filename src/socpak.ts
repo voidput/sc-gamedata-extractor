@@ -413,6 +413,49 @@ export function loadZones(extractDir: string, placements: Map<string, PlacedCont
   return zones;
 }
 
+/** How a planet or moon turns, from its own container document. */
+export interface BodySpin {
+  /** Hours the body takes to turn once (`planetRotationSpeed`). */
+  rotationHours: number;
+  /**
+   * Radius of the body's rotating zone, metres (`gridRadius`): what the container places
+   * inside it turns with the body, the surface and low orbit alike. What it places
+   * farther out, such as moons, holds still.
+   */
+  gridRadius?: number;
+}
+
+/**
+ * A body's rotation, read from its container document: the body's own entity
+ * carries `planetRotationSpeed`, the document root `gridRadius`. The phase of
+ * the turn is not in the files; only the rate.
+ */
+export function readSpin(xml: string): BodySpin | undefined {
+  const hours = Number(xml.match(/\bplanetRotationSpeed="([^"]+)"/)?.[1]);
+  if (!(hours > 0)) return undefined;
+  const grid = Number(xml.match(/<ObjectContainer\b[^>]*\bgridRadius="([^"]+)"/)?.[1]);
+  return grid > 0 ? { rotationHours: hours, gridRadius: grid } : { rotationHours: hours };
+}
+
+/** Rotation of every extracted body a placement points at, by record id. */
+export function loadSpins(extractDir: string, placements: Map<string, PlacedContainer>): Map<string, BodySpin> {
+  const index = indexContainers(extractDir);
+  const spins = new Map<string, BodySpin>();
+  for (const [record, placed] of placements) {
+    if (!placed.container) continue;
+    const file = index.get(archiveKey(placed.container));
+    if (!file) continue;
+    try {
+      const xml = readContainerXml(fs.readFileSync(file));
+      const spin = xml ? readSpin(xml) : undefined;
+      if (spin) spins.set(record, spin);
+    } catch {
+      // An unreadable container just leaves that body without a rotation.
+    }
+  }
+  return spins;
+}
+
 /**
  * Absolute positions of every star map location under `extractDir`, keyed by
  * StarMapObject record id.

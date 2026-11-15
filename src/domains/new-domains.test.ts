@@ -168,6 +168,51 @@ describe("starmap types", () => {
     expect(byName.get(station.name)?.jammerRadius).toBeUndefined();
   });
 
+  it("keeps a surface place's offset from its body and the body's rotation period", () => {
+    const rotation = [1, 0, 0, 0] as [number, number, number, number];
+    const typeRecord = rec("StarMapObjectTypes", "StarMapObjectTypes", {
+      types: [
+        { _RecordId_: "t-planet", name: "Planet" },
+        { _RecordId_: "t-city", name: "LandingZone" },
+      ],
+    });
+    const station = rec("StarMapObject", "Harbor", {});
+    const moon = rec("StarMapObject", "Luna", {});
+    const planet = rec("StarMapObject", "World", {
+      type: { _RecordId_: "t-planet", _RecordName_: "StarMapObjectType.t-planet" },
+      quantumTravelData: { obstructionRadius: 1_008_900 },
+    });
+    const city = rec("StarMapObject", "City", { type: { _RecordId_: "t-city", _RecordName_: "StarMapObjectType.t-city" } });
+    const centre: [number, number, number] = [5_000_000, 0, 0];
+    const locations = buildLocations(
+      [typeRecord, planet, city, station, moon],
+      empty,
+      new Map([
+        [planet.id, { starMapRecord: planet.id, position: centre, depth: 0, rotation }],
+        [station.id, { starMapRecord: station.id, position: [5_000_000, 0, 1_149_000] as [number, number, number], depth: 2, rotation, parentRecord: planet.id, parentPosition: centre }],
+        [moon.id, { starMapRecord: moon.id, position: [5_000_000, 90_000_000, 0] as [number, number, number], depth: 2, rotation, parentRecord: planet.id, parentPosition: centre }],
+        [
+          city.id,
+          { starMapRecord: city.id, position: [5_000_000 - 328_989, -752_435, 572_120] as [number, number, number], depth: 2, rotation, parentRecord: planet.id, parentPosition: centre },
+        ],
+      ]),
+      new Map(),
+      new Map([[planet.id, { rotationHours: 2.48, gridRadius: 2_000_000 }]]),
+    );
+    const byName = new Map(locations.map((l) => [l.recordName, l]));
+    expect(byName.get(planet.name)).toMatchObject({ position: { x: 5_000_000, y: 0, z: 0 }, rotationHours: 2.48, gridRadius: 2_000_000 });
+    expect(byName.get(planet.name)?.local).toBeUndefined();
+    // On the surface: no place in space, but where it sits on the body, and no period of its own.
+    expect(byName.get(city.name)?.position).toBeUndefined();
+    expect(byName.get(city.name)).toMatchObject({ local: { x: -328_989, y: -752_435, z: 572_120 }, turnsWith: planet.name });
+    expect(byName.get(city.name)?.rotationHours).toBeUndefined();
+    // In low orbit inside the rotating zone: a place in space that turns with the body.
+    expect(byName.get(station.name)).toMatchObject({ position: { x: 5_000_000, y: 0, z: 1_149_000 }, local: { x: 0, y: 0, z: 1_149_000 }, turnsWith: planet.name });
+    // Beyond the zone: a place in space that holds still.
+    expect(byName.get(moon.name)?.position).toBeDefined();
+    expect(byName.get(moon.name)?.local).toBeUndefined();
+  });
+
   it("gives an outlaw station its jammer dead zone", () => {
     const placed = (id: string) => ({ starMapRecord: id, position: [0, 0, 0] as [number, number, number], depth: 0, rotation: [1, 0, 0, 0] as [number, number, number, number] });
     const typeRecord = rec("StarMapObjectTypes", "StarMapObjectTypes", { types: [{ _RecordId_: "t-station", name: "Manmade" }] });
