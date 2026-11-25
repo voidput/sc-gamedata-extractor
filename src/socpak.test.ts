@@ -2,7 +2,7 @@ import zlib from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 
-import { parseContainerXml, readContainerXml, readSpin, readZip, rotate } from "./socpak.js";
+import { parseContainerXml, readContainerXml, readSpin, readZip, rotate, systemLevelPlacements } from "./socpak.js";
 
 /** A minimal zip: local headers, central directory, end record. */
 function zip(files: { name: string; localName?: string; data: string; deflate?: boolean }[]): Buffer {
@@ -110,6 +110,30 @@ describe("container placement", () => {
     // A sibling after a nested child is back at the root.
     expect(by.get("After")).toMatchObject({ depth: 0, position: [5, 5, 5] });
     expect(by.get("After")?.parent).toBeUndefined();
+  });
+
+  it("folds bodies held by a plain container into the system level", () => {
+    const system = `
+      <ObjectContainer><ChildObjectContainers>
+        <Child external="1" name="Data/Ring/Segment.socpak" entityName="Segment" pos="1000,0,0" rot="${Math.SQRT1_2},0,0,${Math.SQRT1_2}"/>
+        <Child external="1" name="Data/Ring/Missing.socpak" entityName="Gone" pos="0,0,0"/>
+      </ChildObjectContainers></ObjectContainer>`;
+    const docs: Record<string, string> = {
+      "data/ring/segment.socpak": `<ObjectContainer><ChildObjectContainers>
+        <Child external="1" name="moon.socpak" entityName="Moon" pos="10,0,0" starMapRecord="moon-id"/>
+        <Child external="1" name="Data/Ring/Segment.socpak" entityName="Loop" pos="0,0,0"/>
+      </ChildObjectContainers></ObjectContainer>`,
+    };
+    const missing: string[] = [];
+    const placed = systemLevelPlacements(system, (key) => docs[key], (key) => missing.push(key));
+    const moon = placed.find((p) => p.starMapRecord === "moon-id");
+    // The segment's rotation turns the moon's +x offset into +y.
+    expect(moon?.position[0]).toBeCloseTo(1000);
+    expect(moon?.position[1]).toBeCloseTo(10);
+    expect(moon?.parentRecord).toBeUndefined();
+    expect(missing).toEqual(["data/ring/missing.socpak"]);
+    // A container that holds itself is not followed again.
+    expect(placed.filter((p) => p.entityName === "Moon")).toHaveLength(1);
   });
 });
 
