@@ -6,10 +6,18 @@
 //! `FireHazardIgniteEvent` on entering a health state, a death explosion with a thermal
 //! part, or a misfire that can pick `SFireMisfireEffect`. Its overheat and misfire
 //! temperatures and cooling law come along for the heat estimate.
+//!
+//! Fuel tanks (`FuelTank`, `QuantumFuelTank`, `ExternalFuelTank`) that have a health pool or a
+//! death explosion are listed whatever their fire path. A ship's internal tanks have no
+//! `SHealthComponentParams`, so they carry nothing to list and stay out. Explosives (`Missile`, `Bomb`,
+//! `SpaceMine`) carry `hitExplosion`, the detonation on hit from their missile, bomb or mine
+//! component's `explosionParams`, and are listed when it deals damage.
 
 use crate::domain::{Domain, DomainError, ParseContext, field};
 use crate::entity::{component, components};
-use crate::helpers_items::item_common::{DAMAGE_TYPES, damage_type_map, item_identity};
+use crate::helpers_items::item_common::{
+    DAMAGE_TYPES, attach_def, damage_type_map, item_identity,
+};
 use crate::helpers_items::{locale_compare, number, round_to, truthy};
 use crate::localization::{LocRefs, Localization};
 use crate::records::{GameRecord, at, num, str_};
@@ -199,6 +207,9 @@ pub struct FireItem {
     pub ignite: Option<Vec<IgniteEvent>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub death_explosion: Option<Explosion>,
+    /// Detonation on hit of a missile, bomb or mine (its component's `explosionParams`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit_explosion: Option<Explosion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub misfire: Option<Misfire>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -431,15 +442,38 @@ fn damage_multipliers(record: &GameRecord) -> Option<Map<String, Value>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// Item types listed whatever their fire path, when they have health or a death explosion.
+const FUEL_TANK_TYPES: &[&str] = &["FuelTank", "QuantumFuelTank", "ExternalFuelTank"];
+
+/// Explosive item types and the component holding their `explosionParams`.
+const EXPLOSIVES: &[(&str, &str)] = &[
+    ("Missile", "SCItemMissileParams"),
+    ("Bomb", "SCItemBombParams"),
+    ("SpaceMine", "SCItemSpaceMineParams"),
+];
+
+/// `hitExplosion`: an explosive's detonation on hit, or `None` when it deals no damage.
+fn hit_explosion(record: &GameRecord, ty: Option<&str>) -> Option<Explosion> {
+    let (_, params) = EXPLOSIVES.iter().find(|(t, _)| Some(*t) == ty)?;
+    parse_explosion(at_c(component(record, params), "explosionParams"))
+}
+
 pub fn parse_fire_item(record: &GameRecord, localization: &Localization) -> Option<FireItem> {
+    let ty = str_(attach_def(record).get("Type"));
     let ignite = ignite_events(record);
     let health = component(record, "SHealthComponentParams");
     let death_explosion = parse_explosion(at_c(health, "DeathExplosionParams"));
+    let hit_explosion = hit_explosion(record, ty);
     let misfire = misfire_of(record);
     let (overheat, misfire_temperature, temperature) = temperature_of(record);
+    let health_points = num(at_c(health, "Health"));
+    let damageable_tank = ty.is_some_and(|t| FUEL_TANK_TYPES.contains(&t))
+        && (health_points.is_some() || death_explosion.is_some());
     if ignite.is_empty()
         && !death_explosion.as_ref().is_some_and(Explosion::thermal)
         && misfire.is_none()
+        && hit_explosion.is_none()
+        && !damageable_tank
     {
         return None;
     }
@@ -455,10 +489,11 @@ pub fn parse_fire_item(record: &GameRecord, localization: &Localization) -> Opti
         size: identity.size,
         grade: identity.grade,
         manufacturer: identity.manufacturer,
-        health: num(at_c(health, "Health")),
+        health: health_points,
         damage_multipliers: damage_multipliers(record),
         ignite: (!ignite.is_empty()).then_some(ignite),
         death_explosion,
+        hit_explosion,
         misfire,
         overheat,
         misfire_temperature,
@@ -474,6 +509,7 @@ struct Summary {
     with_ignite_roll: usize,
     with_thermal_death_explosion: usize,
     with_fire_misfire: usize,
+    with_hit_explosion: usize,
     by_type: Map<String, Value>,
 }
 
@@ -483,7 +519,7 @@ impl Domain for Fire {
     }
 
     fn description(&self) -> &'static str {
-        "Fire-hazard rules (ignition by damage type, oxygen, spread, room heat) and what makes each ship item start a fire: ignite rolls on death, thermal death explosions, fire misfires, overheat and misfire temperatures."
+        "Fire-hazard rules (ignition by damage type, oxygen, spread, room heat) and what makes each ship item start a fire: ignite rolls on death, thermal death explosions, fire misfires, overheat and misfire temperatures; also fuel tanks, and the hit detonation of missiles, bombs and mines."
     }
 
     fn filters(&self) -> &'static [&'static str] {
@@ -528,6 +564,7 @@ impl Domain for Fire {
                 .filter(|i| i.death_explosion.as_ref().is_some_and(Explosion::thermal))
                 .count(),
             with_fire_misfire: items.iter().filter(|i| i.misfire.is_some()).count(),
+            with_hit_explosion: items.iter().filter(|i| i.hit_explosion.is_some()).count(),
             by_type,
         };
         let mut body = Map::new();
@@ -659,5 +696,70 @@ mod tests {
             body["items"][0]["deathExplosion"],
             json!({"damage": {"thermal": 50}, "maxRadius": 5.0})
         );
+    }
+    #[test]
+    fn fuel_tanks_are_listed_without_a_fire_path() {
+        let tank = rec(
+            "EntityClassDefinition",
+            "MISC_FuelRefinery_L",
+            json!({"Components": [
+                {"_Type_": "SAttachableComponentParams", "AttachDef": {"Type": "FuelTank", "SubType": "Fuel"}},
+                {"_Type_": "SHealthComponentParams", "Health": 10000,
+                    "DamageResistances": {"PhysicalResistance": {"Multiplier": 1}},
+                    "DeathExplosionParams": {"damage": {"DamagePhysical": 300}, "minRadius": 2.5, "maxRadius": 25}}]}),
+        );
+        let other = rec(
+            "EntityClassDefinition",
+            "PWR_Plain",
+            json!({"Components": [
+                {"_Type_": "SAttachableComponentParams", "AttachDef": {"Type": "PowerPlant"}},
+                {"_Type_": "SHealthComponentParams", "Health": 10}]}),
+        );
+        // A ship's internal tank: no health component, so nothing to list.
+        let internal = rec(
+            "EntityClassDefinition",
+            "HTNK_AEGS_Gladius",
+            json!({"Components": [
+                {"_Type_": "SAttachableComponentParams", "AttachDef": {"Type": "FuelTank", "SubType": "Fuel"}}]}),
+        );
+        let body = parse(vec![tank, other, internal]);
+        let items = body["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["type"], json!("FuelTank"));
+        assert_eq!(items[0]["health"], json!(10000.0));
+        assert_eq!(
+            items[0]["deathExplosion"],
+            json!({"damage": {"physical": 300}, "minRadius": 2.5, "maxRadius": 25.0})
+        );
+        assert!(items[0].get("hitExplosion").is_none());
+    }
+
+    #[test]
+    fn explosives_carry_their_hit_explosion() {
+        let bomb = rec(
+            "EntityClassDefinition",
+            "BOMB_S03_FSKI_Thunderball",
+            json!({"Components": [
+                {"_Type_": "SAttachableComponentParams", "AttachDef": {"Type": "Bomb", "Size": 3}},
+                {"_Type_": "SCItemBombParams", "explosionParams": {"minRadius": 40, "maxRadius": 40,
+                    "damage": {"_Type_": "DamageInfo", "DamagePhysical": 12500, "DamageEnergy": 14500,
+                        "DamageThermal": 0}}}]}),
+        );
+        // A missile type reading another type's component gets nothing.
+        let dud = rec(
+            "EntityClassDefinition",
+            "MISL_Dud",
+            json!({"Components": [
+                {"_Type_": "SAttachableComponentParams", "AttachDef": {"Type": "Missile"}},
+                {"_Type_": "SCItemBombParams", "explosionParams": {"damage": {"DamagePhysical": 5}}}]}),
+        );
+        let body = parse(vec![bomb, dud]);
+        let items = body["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0]["hitExplosion"],
+            json!({"damage": {"physical": 12500, "energy": 14500}, "minRadius": 40.0, "maxRadius": 40.0})
+        );
+        assert_eq!(body["summary"]["withHitExplosion"], json!(1));
     }
 }
