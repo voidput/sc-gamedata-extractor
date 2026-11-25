@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { checkWeapon, deflectionCheck } from "./deflection.js";
-import type { Armor } from "./domains/ships.js";
-import type { Weapon } from "./domains/weapons.js";
+import type { Armor, Weapon } from "./combat-types.js";
 
 // Perseus stock armour, as the files have it.
 const perseus: Armor = {

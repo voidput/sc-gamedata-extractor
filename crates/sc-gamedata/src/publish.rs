@@ -131,7 +131,7 @@ fn is_version(s: &str) -> bool {
 pub fn read_dumps(data_dir: &Path) -> Result<Vec<Dump>> {
     if !data_dir.exists() {
         return Err(Error::Message(format!(
-            "No data directory at {}. Run `npm run all` first.",
+            "No data directory at {}. Run `make all` first.",
             data_dir.display()
         )));
     }

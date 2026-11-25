@@ -31,12 +31,8 @@
  * hits) and results are tabulated at several g levels instead of guessing one.
  */
 
-import type { DamageInfo } from "./domains/ammo.js";
-import type { Armor } from "./domains/ships.js";
-import type { Weapon } from "./domains/weapons.js";
+import type { Armor, DamageInfo, Falloff, Weapon } from "./combat-types.js";
 import { checkWeapon } from "./deflection.js";
-
-type Falloff = NonNullable<NonNullable<Weapon["ammo"]>["falloff"]>;
 
 const round = (value: number, places = 2) => Math.round(value * 10 ** places) / 10 ** places;
 export const G = 9.80665;

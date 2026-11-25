@@ -1,7 +1,7 @@
 ---
 title: Rust pipeline in sc-gamedata
 tags: [plans, specs]
-updated: 2026-11-23
+updated: 2026-11-25
 status: active
 ---
 
@@ -27,6 +27,21 @@ and the starorg-codex app run the same code and parity checks stop being needed.
   `GOLDEN_EXTRACTION_FILTERS`.
   - The TS now carries `nameKey`/`descriptionKey`/`nameStatus` (item 1).
   - The LIVE 4.10.201.48085 output is byte-identical to the TS, with 490 items.
+- 2026-11-25: clean-extract parity for LIVE 4.10.201.48085 (fresh `EXTRACT_DIR`, `make all`
+  vs `sc-gamedata all`): 29 of 29 `game-*.json` byte-identical apart from `_extracted`.
+  `socpak.rs` gained `system_level_placements` (TS `systemLevelPlacements`, commit
+  `350e7053b`), which places Nyx's bodies held by plain ring-segment containers (Levski and 21
+  other paths in `game-starmap`). starorg-strings' `starorg-gamedata` copy still needs it.
+- 2026-11-25 (step 4, uncommitted): the Makefile drives `./target/release/sc-gamedata`
+  (`make build` = `cargo build --release`) for every target the TS CLI ran. `make publish` /
+  `republish` run `sc-gamedata publish --gh-script .tmp/gh-release-<CHANNEL>.sh`, then `sh` it
+  (`gh release edit` on a republish, then create unless `gh release view` finds one). `make
+  publish-dry` was byte-identical to `node scripts/publish-dump.mjs --dry-run`.
+- 2026-11-25 (step 4 done, uncommitted): the TS parse, diff, notes and publish are deleted
+  (list under step 4). What is left of the TypeScript is `src/query/` (step 5) and the combat
+  maths `make export` reads (`src/{deflection,engagement,combat-types}.ts`); `make build-ts`
+  compiles only that. `make export` output on `.tmp/parity/rust` is identical to the old
+  build's apart from the `generated` timestamps.
 
 ## Steps
 
@@ -37,16 +52,30 @@ and the starorg-codex app run the same code and parity checks stop being needed.
    in the parity runs. 381 lib tests pass and clippy is clean.
 3. **Publish**: done. `src/publish.rs` + `sc-gamedata publish`. The dry run is byte-identical
    to the script; the push path was tested on a scratch bare repo; instead of calling `gh` it
-   prints the `gh release` command for the user to run. 391 tests pass. → `publish-dump.mjs` and `redact.mjs` in Rust. The prose and strings redaction
-   already exist in `localization::redaction`.
+   prints the `gh release` command for the user to run. 391 tests pass. This replaced
+   `publish-dump.mjs` and `redact.mjs`; the prose and strings redaction reuse
+   `localization::redaction`.
    - Port the dry run and the git commit/tag/push only.
    - The GitHub release step (`gh release`) stays in the TS script, or a Makefile line, so no
      Rust step needs `gh`.
-4. **Switch over:**
-   - The Makefile calls the Rust binary.
-   - Data is published from the Rust output only after one release where both produce the
-     same files (after a clean re-extract, so the stale rows are gone).
-   - Then the TS parse, diff and notes are deleted.
+4. **Switch over**: done 2026-11-25.
+   - The Makefile calls the Rust binary for every target (`make build` = cargo;
+     `make publish` / `republish` run the `--gh-script` it writes).
+   - Parity gate: a clean re-extract of LIVE 4.10.201.48085 gave 29 of 29 datasets
+     byte-identical to the TS, and `make publish-dry` matched the script byte for byte. The
+     first release published from the Rust output is the next `make publish`.
+   - Deleted: `src/cli.ts`, `pipeline.ts`, `localization.ts`, `diff.ts`, `changes.ts`,
+     `notes.ts`, `finder.ts`, `search-index.ts`, the parse helpers only they used
+     (`records.ts`, `entity.ts`, `cryxml.ts`, `glob.ts`, `socpak.ts`, `starbreaker.ts`,
+     `tags.ts`), `src/domains/`, `src/sources/`, all their tests, and
+     `scripts/publish-dump.mjs`, `scripts/redact.mjs` (+ test). `package.json` lost the
+     `bin`, the `extract`/`parse`/`all`/`changes`/`publish-dump` scripts and the unused `zod`
+     dependency. They stay in git history (`4dc44d483`).
+   - Kept: `src/query/` (SCMCP vendors it, step 5); `src/deflection.ts` and
+     `src/engagement.ts` (+ tests) for `scripts/export-infographic.mjs`, now typed by
+     `src/combat-types.ts` instead of `src/domains/*`; `scripts/release-on-exit.sh`,
+     `scripts/obsidian_frontmatter.py`, `scripts/csv-to-xlsx.py` (export) and
+     `scripts/dump-repo-template/` (`publish.rs` embeds it).
 5. **SCMCP** (decided 2026-11-23: Rust): SCMCP moves to the Rust query. The vendored TS copy of
    `src/query/*.ts` stays as the fallback for now, and `src/query/` is kept here until SCMCP no
    longer needs it.
@@ -70,6 +99,5 @@ and the starorg-codex app run the same code and parity checks stop being needed.
 - Keep commits few and grouped. Plan in `docs/plans/` only, with no issues, boards, CI
   watching or 1Password reads.
 
-- Until step 4, the TS output stays the reference. Any Rust change to a dataset ships with
-  the same change in TS, or the same change in both copies of the crate.
-- No publishing from the Rust pipeline before step 4.
+- Since step 4 the Rust crate is the only producer. A dataset change goes into both copies
+  of the crate (this one and starorg-strings' `starorg-gamedata`, step 6).

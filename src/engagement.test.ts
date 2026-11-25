@@ -12,8 +12,7 @@ import {
   rangeTable,
   targetOf,
 } from "./engagement.js";
-import type { Armor } from "./domains/ships.js";
-import type { Weapon } from "./domains/weapons.js";
+import type { Armor, Weapon } from "./combat-types.js";
 
 const hammerhead: Armor = {
   item: "ARMR_AEGS_Hammerhead",

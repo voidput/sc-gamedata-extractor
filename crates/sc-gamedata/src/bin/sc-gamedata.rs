@@ -161,9 +161,9 @@ Commands:
   mcp-query        One SCMCP tool request (JSON on stdin), its reply on stdout
   engage <ship> [target]
                    A loadout's hull DPS on a target by distance, and its effective ranges
-  publish          Commit, tag and push data/ to the dumps repo (as
-                   scripts/publish-dump.mjs; prints the gh release command
-                   instead of running it). Always --dry-run first
+  publish          Commit, tag and push data/ to the dumps repo (prints the
+                   gh release command, or writes it to --gh-script, instead of
+                   running it). Always --dry-run first
   help             Show this message
 
 Options:
@@ -205,6 +205,8 @@ Options:
   --channel <name>      publish: release channel when the extract marker has none
   --patch <x.y.z>       publish: patch named in the release title
   --out <path>          publish: the datasets to publish (default <checkout>/data)
+  --gh-script <file>    publish: write the gh release steps to this shell script
+                        instead of printing them (make publish runs it)
   --ammo                obtain, where: report on the magazine or canister the
                         matched weapon loads instead of the weapon
   --limit <n>|all       shop: items listed per terminal (default 25)
@@ -266,10 +268,11 @@ A build is "local" (the --out directory), a directory of game-*.json, or a
 tag in the dumps repo. A tag prefix such as 4.10 picks the newest matching
 build.
 
-Differences from node dist/cli.js: extract reads the archive itself (parse is
-an alias, --starbreaker is gone); extract also writes game-strings-english.json
-when no domain is named (make all's strings step) and snapshots it with the
-datasets; strings reads Data.p4k unless --extract-dir is given."#;
+Differences from the former TypeScript CLI (removed 2026-11-25): extract reads
+the archive itself (parse is an alias, --starbreaker is gone); extract also
+writes game-strings-english.json when no domain is named (make all's strings
+step) and snapshots it with the datasets; strings reads Data.p4k unless
+--extract-dir is given."#;
 
 /// `path.resolve`.
 fn resolve(p: &str) -> PathBuf {
@@ -756,6 +759,56 @@ fn print_release_steps(plan: &publish::PublishPlan, edit: bool) {
     println!("{}", release_create_line(plan));
 }
 
+/// The script's GitHub release steps as a POSIX shell script, for `make publish` to run:
+/// `gh release edit` first when the build was republished, then `ensureRelease` (create
+/// the release unless `gh release view` finds one). This tool never runs it.
+fn release_script(plan: &publish::PublishPlan, edit: bool) -> String {
+    let view = shell_line(&[
+        "gh".into(),
+        "release".into(),
+        "view".into(),
+        plan.build.clone(),
+        "-R".into(),
+        plan.repo.clone(),
+    ]);
+    let exists = shell_line(&[
+        "echo".into(),
+        format!("Release {} already exists.", plan.build),
+    ]);
+    let mut script = format!(
+        "#!/bin/sh\n# GitHub release for {}, written by `sc-gamedata publish --gh-script`.\nset -e\n",
+        plan.build
+    );
+    if edit {
+        script.push_str(&release_edit_line(plan));
+        script.push('\n');
+    }
+    script.push_str(&format!(
+        "if {view} >/dev/null 2>&1; then\n  {exists}\nelse\n  {}\nfi\n",
+        release_create_line(plan)
+    ));
+    script
+}
+
+/// The release steps: printed for the user to run, or written to `--gh-script <file>`.
+fn release_steps(
+    plan: &publish::PublishPlan,
+    edit: bool,
+    gh_script: Option<&Path>,
+) -> Result<(), String> {
+    let Some(file) = gh_script else {
+        print_release_steps(plan, edit);
+        return Ok(());
+    };
+    if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(file, release_script(plan, edit))
+        .map_err(|e| format!("{}: {e}", file.display()))?;
+    println!("\nrelease steps written to {}", file.display());
+    Ok(())
+}
+
 fn is_notes_warning(w: &str) -> bool {
     w.starts_with("Notes:  skipped (")
 }
@@ -774,6 +827,7 @@ fn run_publish(flags: &Flags) -> Result<ExitCode, String> {
         republish: args.republish,
         ..Default::default()
     };
+    let gh_script = flags.get("gh-script").map(|f| resolve(f));
     let plan = publish::plan(&options).map_err(|e| e.to_string())?;
     // The script warns about the channel while resolving it, before the listing, and
     // about skipped notes after it.
@@ -816,7 +870,7 @@ fn run_publish(flags: &Flags) -> Result<ExitCode, String> {
                 "Build {} is already published as a tag. Pass --republish to replace it.",
                 plan.build
             );
-            print_release_steps(&plan, false);
+            release_steps(&plan, false, gh_script.as_deref())?;
         }
         publish::StageOutcome::Staged {
             republished, notes, ..
@@ -835,7 +889,7 @@ fn run_publish(flags: &Flags) -> Result<ExitCode, String> {
                     println!();
                 }
             }
-            print_release_steps(&plan, republished);
+            release_steps(&plan, republished, gh_script.as_deref())?;
             println!(
                 "\n{} {} to {}.",
                 if republished {
@@ -2334,6 +2388,36 @@ mod tests {
 
     fn args(s: &[&str]) -> Args {
         parse_args(&s.iter().map(|x| x.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn release_script_edits_only_on_republish_and_creates_unless_found() {
+        let plan = publish::PublishPlan {
+            build: "5.0.202.35026".into(),
+            repo: "voidput/sc-gamedata-dumps".into(),
+            remote: String::new(),
+            work_dir: PathBuf::new(),
+            origin: publish::Origin {
+                channel: "PTU".into(),
+                branch: Some("sc-alpha-5.0.0".into()),
+            },
+            patch: None,
+            republish: false,
+            dumps: Vec::new(),
+            notes: publish::PublishNotes::Skipped(String::new()),
+            warnings: Vec::new(),
+        };
+        let fresh = release_script(&plan, false);
+        assert!(fresh.starts_with("#!/bin/sh\n"));
+        assert!(fresh.contains("set -e\n"));
+        assert!(!fresh.contains("gh release edit"));
+        assert!(fresh.contains(
+            "if gh release view 5.0.202.35026 -R voidput/sc-gamedata-dumps >/dev/null 2>&1; then\n  echo 'Release 5.0.202.35026 already exists.'\nelse\n  gh release create 5.0.202.35026 -R voidput/sc-gamedata-dumps --verify-tag --title '5.0.0 PTU (5.0.202.35026)' --notes "
+        ));
+        assert!(fresh.trim_end().ends_with("--prerelease\nfi"));
+        let edited = release_script(&plan, true);
+        let edit = edited.find("gh release edit 5.0.202.35026").unwrap();
+        assert!(edit < edited.find("gh release view").unwrap());
     }
 
     #[test]

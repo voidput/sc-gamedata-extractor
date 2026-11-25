@@ -17,8 +17,7 @@
  *   drops, which this check does not model.
  */
 
-import type { Armor } from "./domains/ships.js";
-import type { Weapon } from "./domains/weapons.js";
+import type { Armor, Weapon } from "./combat-types.js";
 
 export interface DeflectionRow {
   name: string;

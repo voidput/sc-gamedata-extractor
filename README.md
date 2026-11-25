@@ -3,36 +3,43 @@
 Extract Star Citizen game data into structured JSON, straight from the shipped
 game files.
 
-The game ships its own database. [StarBreaker][sb] reads the `Data.p4k` archive
-and the DataCore records inside it; this tool drives StarBreaker, parses the raw
-records, and writes one JSON dataset per domain. No API, no scraping, no waiting
+The game ships its own database. The `sc-gamedata` binary (Rust, in
+`crates/sc-gamedata`) links the [StarBreaker][sb] crates, reads the `Data.p4k`
+archive and the DataCore records inside it directly, and writes one JSON
+dataset per domain. No API, no scraping, no waiting
 for a third party to update after patch day.
 
 [sb]: https://github.com/diogotr7/StarBreaker
 
 ## Where the output goes
 
-Parsed datasets are not committed here. `scripts/publish-dump.mjs` publishes a
-build to [sc-gamedata-dumps][dumps] — one commit per game build, tagged with the
+Parsed datasets are not committed here. `make publish` (`sc-gamedata publish`,
+then the GitHub release) publishes a build to [sc-gamedata-dumps][dumps] — one commit per game build, tagged with the
 build string, which is what makes patch-over-patch diffs possible.
 [SCMCP][scmcp] reads that repo to answer questions like "what changed for the
 Gladius between two patches".
 
 ```bash
-npm run all                         # extract + parse into data/
-npm run publish-dump -- --dry-run   # what would be published, and how big
-npm run publish-dump                # commit, tag, push
+make                # read Data.p4k into data/
+make publish-dry    # what would be published, and how big
+make publish        # commit, tag, push, then the GitHub release
 ```
+
+`sc-gamedata publish` commits, tags and pushes; it never runs `gh`. `make
+publish` has it write the release steps to `.tmp/gh-release-<CHANNEL>.sh` and
+runs that script: `gh release edit` on a republish, then `gh release create`
+unless the release already exists.
 
 Each tag also gets a GitHub release titled with the patch and channel, such as
 `4.10.2 LIVE (4.10.197.2878)`. The channel is recorded at extract time:
 PTU, EPTU and TECH-PREVIEW builds become prereleases, HOTFIX builds are
 releases that are never marked latest, and only LIVE is marked latest.
 Re-running against a tag that has no release creates the release, and
-`--channel` overrides the recorded channel. With make:
-`make ptu && make publish-dry && make publish`.
+`PUBLISH_CHANNEL=` (`--channel`) overrides the recorded channel. One channel
+end to end: `make release-ptu` (`make ptu && make publish-dry && make
+publish`).
 
-Publishing redacts prose (`scripts/redact.mjs`); the local `data/` copy stays
+Publishing redacts prose (`localization::redaction` in `crates/sc-gamedata/src/localization.rs`); the local `data/` copy stays
 complete:
 
 - `game-strings-english.json` keeps name-shaped keys only: no descriptive
@@ -53,11 +60,10 @@ Each publish also writes patch notes for the build against the previous
 published build on the same release line (same major version, by version
 order, so `4.10.200` follows `4.10.197` whatever the tag dates, and a `1.0.x`
 tag is never the base for a `4.x` build) to `notes/<build>.md` and `notes/<build>.json` in the same
-commit, beside `data/`. They come from `dist/notes.js` (the `notes` command
-below), with the newer side read from the redacted dumps exactly as published,
+commit, beside `data/`. They come from the `notes` command
+below, with the newer side read from the redacted dumps exactly as published,
 so the string counts compare like with like. The dry run lists both files and
-their sizes. No earlier tag in the checkout, or no `npm run build` yet, and the
-notes are skipped with a warning rather than blocking the publish; so are notes
+their sizes. No earlier tag in the checkout and the notes are skipped with a warning rather than blocking the publish; so are notes
 that fail to build. To add notes
 to a build already out, `make republish` it. SCMCP serves them as
 `sc_release_notes`.
@@ -120,7 +126,7 @@ build is never copied into a snapshot, so partial re-parses cannot mix builds.
 The routine per patch, LIVE or PTU:
 
 ```bash
-sc-gamedata all                        # or: extract --channel PTU, then parse
+make                                   # or: make ptu
 sc-gamedata builds                     # the new build now sits beside the old
 sc-gamedata changes 4.10.196 local     # buffs and nerfs, written as CSV and JSON
 ```
@@ -154,44 +160,41 @@ about its build.
 
 ## Requirements
 
-- Node 20 or newer
+- Rust (stable, edition 2024) and cargo; `make` builds the binary
 - A Star Citizen install (any channel: LIVE, PTU, EPTU, HOTFIX)
-- The [StarBreaker CLI][sb] on your PATH, or pointed at with `--starbreaker`
+- `gh` for `make publish` (the GitHub release), `fzf` for `make find`
+- Node 20 or newer only for `make export` (`src/deflection.ts`, `src/engagement.ts`),
+  the TypeScript tests and SCMCP's `src/query/`
 
 ## Usage
 
 ```bash
-npm install && npm run build
+make                            # cargo build --release, then every dataset into data/
+make ptu                        # the PTU install into data-ptu/
+make DOMAINS="mining"           # just one domain
+make help                       # every target and variable
 
-node dist/cli.js domains        # what can be built
-node dist/cli.js all            # extract, then parse
-node dist/cli.js all mining     # just one domain
-node dist/cli.js parse          # re-parse without touching the archive
-node dist/cli.js fetch          # API datasets, no game install needed
+sc-gamedata domains             # what can be built (./target/release/sc-gamedata)
+sc-gamedata all mining          # what make DOMAINS=mining runs
+sc-gamedata fetch               # API datasets, no game install needed
 ```
 
-Both the game install and StarBreaker are auto-detected where possible. Override
-either explicitly:
+The Makefile runs `./target/release/sc-gamedata`; each target that needs it
+depends on `make build` (`cargo build --release -p sc-gamedata`, a no-op when
+current). `CHANNEL`, `P4K`, `SC_ROOT`, `EXTRACT_DIR`, `OUT` and `DOMAINS` map
+onto the binary's flags:
 
-```bash
-node dist/cli.js all \
-  --p4k "/path/to/StarCitizen/LIVE/Data.p4k" \
-  --starbreaker /path/to/starbreaker \
-  --out ./data
-```
+| make variable | Flag | Env var | Default |
+| --- | --- | --- | --- |
+| `P4K` | `--p4k` | `SC_DATA_P4K` | `$(SC_ROOT)/$(CHANNEL)/Data.p4k` |
+| `CHANNEL` | `--channel` | | `LIVE` |
+| `EXTRACT_DIR` | `--extract-dir` | | `./extracted-data` (`-ptu` etc. per channel) |
+| `OUT` | `--out` | | `./data` (`./data-ptu` etc. per channel) |
 
-| Option | Env var | Default |
-| --- | --- | --- |
-| `--p4k` | `SC_DATA_P4K` | auto-detected |
-| `--starbreaker` | `STARBREAKER_BIN` | found on PATH |
-| `--channel` | | `LIVE` |
-| `--extract-dir` | | `./extracted-data` |
-| `--out` | | `./data` |
-
-Extraction and parsing are separate on purpose. Extraction is the slow half, and
-each domain pulls only the record globs it declares, so a full run of the mining
-domain takes seconds rather than unpacking a 145 GB archive. Once records are on
-disk, `parse` re-runs against them freely.
+The binary reads the archive itself, so `extract`, `parse` and `all` are one
+pass of about 20 seconds for every domain, the string table and the search
+index (a `DOMAINS` run leaves the last two be). `EXTRACT_DIR` now only holds the
+`_build.json` marker that publishing reads; there is no extracted record tree.
 
 ## Output
 
@@ -219,23 +222,27 @@ diff for free.
 
 ## Adding a domain
 
-A domain declares which records it needs and how to shape them:
+A domain is a Rust type implementing `Domain` (`crates/sc-gamedata/src/domain.rs`)
+under `crates/sc-gamedata/src/domains/`: it declares which records it needs and how to
+shape them.
 
-```ts
-export const miningDomain: Domain = {
-  name: "game-mining",
-  description: "Mineable element physics and mining laser/module modifiers.",
-  filters: ["**/mining/**"],
-  parse(records) {
-    return { mineableElements: [] };
-  },
-};
+```rust
+impl Domain for Mining {
+    fn name(&self) -> &'static str { "game-mining" }
+    fn description(&self) -> &'static str { "Mineable element physics and mining laser/module modifiers." }
+    fn filters(&self) -> &'static [&'static str] { &["**/mining/**"] }
+    fn parse(&self, ctx: &ParseContext<'_>) -> Result<Map<String, Value>, DomainError> {
+        let mut body = Map::new();
+        field(&mut body, "mineableElements", &Vec::<Value>::new());
+        Ok(body)
+    }
+}
 ```
 
-Register it in `src/pipeline.ts` **after** its output has been checked against a
-real extraction. A parser whose selectors silently match nothing still writes a
-well-formed file full of nothing, which is worse than no file at all. The
-pipeline warns when a domain yields an empty collection, but the warning is a
+Register it in `all_domains()` (`crates/sc-gamedata/src/bin/sc-gamedata.rs`) **after** its
+output has been checked against a real extraction. A parser whose selectors silently match
+nothing still writes a well-formed file full of nothing, which is worse than no file at
+all. The pipeline warns when a domain yields an empty collection, but the warning is a
 backstop, not a substitute for looking.
 
 `filters` scope a domain twice: they select records out of the archive, and they
@@ -358,8 +365,8 @@ install:
 
 ```bash
 export UEXTOKEN=...        # register an app at uexcorp.space
-node dist/cli.js fetch
-node dist/cli.js fetch uex-terminals   # public, works without a token
+sc-gamedata fetch
+sc-gamedata fetch uex-terminals   # public, works without a token
 ```
 
 UEX answers HTTP 200 with a `status` field even when a request fails, so the
@@ -499,10 +506,11 @@ restart.
 ### Export for charts and sites
 
 ```sh
-npm run export
+make export
 ```
 
-writes flat CSV tables, one Excel workbook and a `combat.json` bundle to
+(TypeScript: `make export` runs `tsc` on `src/deflection.ts` and `src/engagement.ts`, then
+reads `$(OUT)` only, `data/` by default) writes flat CSV tables, one Excel workbook and a `combat.json` bundle to
 `exports/<build>/`: ships, stock loadouts, ship and FPS weapons, missiles,
 each component category, a per-ship deflection summary and a full weapon by
 ship deflection matrix. Weapons carry `record` and `key` (name plus size)
@@ -515,10 +523,10 @@ times pellets. A README.txt in each export lists units and derived columns.
 ### Engagements and effective range
 
 ```sh
-node dist/cli.js engage gladius --target gladius
-node dist/cli.js engage --weapons "M7A Cannon*2,AD5B Ballistic Gatling*2" --target cutter
-node dist/cli.js engage gladius --target cutter --accel 0,4,8 --closing 150
-node dist/cli.js engage --weapons "P4-AR Rifle" --bands 0,25,50,100,200
+sc-gamedata engage gladius --target gladius
+sc-gamedata engage --weapons "M7A Cannon*2,AD5B Ballistic Gatling*2" --target cutter
+sc-gamedata engage gladius --target cutter --accel 0,4,8 --closing 150
+sc-gamedata engage --weapons "P4-AR Rifle" --bands 0,25,50,100,200
 ```
 
 takes a ship's stock guns, or any guns by record, `name S<size>` or name with
@@ -563,7 +571,7 @@ ranges against a light, medium, large and capital reference target.
 ### Deflection check
 
 ```sh
-node dist/cli.js deflect perseus --size 3
+sc-gamedata deflect perseus --size 3
 ```
 
 lists the ship weapons whose per-projectile damage gets through a ship's stock
@@ -573,8 +581,8 @@ listed apart, since it drains shields and components rather than hull. Armour
 is at full health; the game lowers deflection as armour health drops.
 
 ```sh
-node dist/cli.js diff 4.10.196.36804 local ships --item gladius --fields totals
-node dist/cli.js diff 4.10.196.36804 local ship-components --collection shields --item rhada
+sc-gamedata diff 4.10.196.36804 local ships --item gladius --fields totals
+sc-gamedata diff 4.10.196.36804 local ship-components --collection shields --item rhada
 ```
 
 Checked against a loadout site for every S5 ship gun it lists: DPS, alpha,

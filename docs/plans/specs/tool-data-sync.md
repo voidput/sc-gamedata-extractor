@@ -62,8 +62,9 @@ snares / MCsim / scsticks  .github/workflows/data-sync.yml
 - Publish writes `build.json` at the repo root, beside `data/` and `notes/`:
   `{ build, channel, patch, branch }` (two-space JSON, `null` when unknown). It has no
   timestamp, so republishing an identical build still reads as "nothing to republish". The
-  fan-out reads it instead of parsing the release title. Built: `buildManifest` in
-  `publish-dump.mjs` and `build_manifest` in `src/publish.rs`, byte-identical. Publish
+  fan-out reads it instead of parsing the release title. Built: `build_manifest` in
+  `crates/sc-gamedata/src/publish.rs` (byte-identical to the former `publish-dump.mjs`
+  `buildManifest`, removed 2026-11-25). Publish
   always refreshes the template's `.github/`; README and NOTICE are copied only when missing.
 - `fanout.yml`, kept in `scripts/dump-repo-template/.github/workflows/` so that publish
   installs it:
@@ -102,10 +103,10 @@ snares / MCsim / scsticks  .github/workflows/data-sync.yml
 ### Make side
 
 - `EXTRACT_DIR` and `OUT` default per channel: `./extracted-data` and `./data` for LIVE, and
-  `./extracted-<ch>` and `./data-<ch>` otherwise (`make ptu` → `data-ptu`). The LIVE `data/` is
+  `./extracted-data-<ch>` and `./data-<ch>` otherwise (`make ptu` → `data-ptu`). The LIVE `data/` is
   never overwritten.
-- `publish-dump.mjs` and the Rust `publish` read `SC_DATA_DIR` (default `data/`), and the
-  Make `PUBLISH` passes `$(OUT)`.
+- The Rust `publish` reads `SC_DATA_DIR` (default `data/`) and `SC_EXTRACT_DIR`, and the
+  Make `PUBLISH` passes `$(OUT)` and `$(EXTRACT_DIR)`.
 - New targets: `make release-live` and `make release-ptu`, each `all` → `publish-dry` →
   `publish` for that channel. `make release-check` lists the installed builds against the dump
   tags.
@@ -152,10 +153,11 @@ second install and no extra login.
   not running. If either changed, it does not publish. The prelaunch block only warns (echo +
   `notify-send`) when the lock is held, because the launcher may be patching `Data.p4k`
   mid-read. It does not block the launch.
-  The extract can take minutes in TS (about 48 s in Rust, see [rust-pipeline](rust-pipeline.md)).
-- **Release creation.** `publish-dump.mjs` calls `gh release` itself, using the local `gh`
-  auth. The Rust `publish` only prints the command, so the hook keeps the JS publish until the
-  Rust one can create the release.
+  The extract takes about 48 s (Rust, see [rust-pipeline](rust-pipeline.md)).
+- **Release creation.** The Rust `publish` never runs `gh`: `make publish` / `republish` have
+  it write the release steps to `.tmp/gh-release-<CHANNEL>.sh` (`--gh-script`), then `sh` that
+  with the local `gh` auth (`gh release edit` on a republish, then create unless `gh release
+  view` finds one). The hook runs `make publish`, so it publishes with Rust since 2026-11-25.
 - **Limit.** PTU updates only when you open the launcher on PTU. Fixing that needs an
   unattended launcher; see the later option.
 
@@ -186,7 +188,9 @@ use, and 310 GB on `local-path`. See [ideas](../later/ideas.md).
    raw-records check in `data-sync.yml`. Also needs `game-fire` in a published build.
 7. **MCsim, ordnance.** Move the raw-record reads of `build_ordnance.py` and
    `missile_controllers.py` into a sc-gamedata `game-ordnance` domain. Follow the `game-fire`
-   handoff precedent and the TS + Rust rule from [dump-enhancements](dump-enhancements.md). Until
+   handoff precedent. Since the TS parse was removed (2026-11-25, see
+   [rust-pipeline](rust-pipeline.md)) a new domain is written in Rust only, in this crate and
+   starorg-strings' copy. Until
    then, ordnance stays a local bake. `build_data.py` (GLB ship models) stays local, out of
    scope.
 

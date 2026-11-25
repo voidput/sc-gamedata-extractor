@@ -279,6 +279,68 @@ pub fn parse_container_xml(xml: &str, frame: Option<&Frame>) -> Vec<PlacedContai
     placed
 }
 
+/// How deep plain containers may nest inside one another below a system document.
+const MAX_PLAIN_NESTING: usize = 4;
+
+/// `systemLevelPlacements`: what a system document places, with the contents of its plain
+/// containers folded in. A plain container is an external `<Child>` that is no star map
+/// location itself, such as an asteroid ring segment, yet can hold bodies: Nyx's Delamar
+/// and Levski sit in `glaciemring_segment_levski`. Its children belong to the system level,
+/// placed in the plain container's frame. `on_missing` is told of each plain container
+/// whose document is not available.
+pub fn system_level_placements(
+    xml: &str,
+    document: &mut dyn FnMut(&str) -> Option<String>,
+    on_missing: &mut dyn FnMut(&str),
+) -> Vec<PlacedContainer> {
+    fn visit(
+        placements: Vec<PlacedContainer>,
+        nesting: usize,
+        chain: &[String],
+        document: &mut dyn FnMut(&str) -> Option<String>,
+        on_missing: &mut dyn FnMut(&str),
+        out: &mut Vec<PlacedContainer>,
+    ) {
+        for placed in placements {
+            let plain = match (&placed.star_map_record, &placed.container) {
+                (None, Some(c)) if nesting < MAX_PLAIN_NESTING => Some(archive_key(c)),
+                _ => None,
+            };
+            let frame = Frame {
+                position: placed.position,
+                rotation: placed.rotation,
+                depth: placed.depth,
+                name: placed.entity_name.clone(),
+                record: placed.parent_record.clone(),
+                record_position: placed.parent_position,
+            };
+            out.push(placed);
+            let Some(key) = plain else { continue };
+            if chain.contains(&key) {
+                continue;
+            }
+            let Some(inner) = document(&key) else {
+                on_missing(&key);
+                continue;
+            };
+            let mut next = chain.to_vec();
+            next.push(key);
+            let children = parse_container_xml(&inner, Some(&frame));
+            visit(children, nesting + 1, &next, document, on_missing, out);
+        }
+    }
+    let mut out = Vec::new();
+    visit(
+        parse_container_xml(xml, None),
+        0,
+        &[],
+        document,
+        on_missing,
+        &mut out,
+    );
+    out
+}
+
 /// One zip entry, located through the central directory.
 #[derive(Debug, Clone)]
 struct ZipEntry {
@@ -714,7 +776,12 @@ impl Containers {
             let Some(xml) = self.document(files, &key) else {
                 continue;
             };
-            for placed in parse_container_xml(&xml, None) {
+            let mut missing: Vec<String> = Vec::new();
+            let level = system_level_placements(&xml, &mut |k| self.document(files, k), &mut |k| {
+                missing.push(k.to_string())
+            });
+            wanted.extend(missing);
+            for placed in level {
                 want(&placed, &self.index, &mut wanted);
                 let Some(container) = placed.container.as_deref() else {
                     continue;
@@ -761,7 +828,9 @@ impl Containers {
             let Some(xml) = self.document(files, &key) else {
                 continue;
             };
-            for placed in parse_container_xml(&xml, None) {
+            let level =
+                system_level_placements(&xml, &mut |k| self.document(files, k), &mut |_| {});
+            for placed in level {
                 let inner_key = match (&placed.star_map_record, &placed.container) {
                     (Some(_), Some(c)) => Some(archive_key(c)),
                     _ => None,
@@ -1059,5 +1128,41 @@ pub(crate) mod tests {
         let spins = c.load_spins(&f, &placements);
         assert_eq!(spins["planet"].grid_radius, Some(5000.0));
         assert!(c.has("data/objectcontainers/pu/loc/planet.socpak"));
+    }
+
+    #[test]
+    fn folds_bodies_held_by_a_plain_container_into_the_system_level() {
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let system = format!(
+            r#"<ObjectContainer><ChildObjectContainers>
+            <Child external="1" name="Data/Ring/Segment.socpak" entityName="Segment" pos="1000,0,0" rot="{h},0,0,{h}"/>
+            <Child external="1" name="Data/Ring/Missing.socpak" entityName="Gone" pos="0,0,0"/>
+            </ChildObjectContainers></ObjectContainer>"#
+        );
+        let segment = r#"<ObjectContainer><ChildObjectContainers>
+            <Child external="1" name="moon.socpak" entityName="Moon" pos="10,0,0" starMapRecord="moon-id"/>
+            <Child external="1" name="Data/Ring/Segment.socpak" entityName="Loop" pos="0,0,0"/>
+            </ChildObjectContainers></ObjectContainer>"#;
+        let mut missing = Vec::new();
+        let placed = system_level_placements(
+            &system,
+            &mut |k| (k == "data/ring/segment.socpak").then(|| segment.to_string()),
+            &mut |k| missing.push(k.to_string()),
+        );
+        let moon = placed
+            .iter()
+            .find(|p| p.star_map_record.as_deref() == Some("moon-id"))
+            .expect("moon placed");
+        // The segment's rotation turns the moon's +x offset into +y.
+        assert!((moon.position[0] - 1000.0).abs() < 1e-6);
+        assert!((moon.position[1] - 10.0).abs() < 1e-6);
+        assert_eq!(moon.parent_record, None);
+        assert_eq!(missing, vec!["data/ring/missing.socpak"]);
+        // A container that holds itself is not followed again.
+        let moons = placed
+            .iter()
+            .filter(|p| p.entity_name.as_deref() == Some("Moon"))
+            .count();
+        assert_eq!(moons, 1);
     }
 }

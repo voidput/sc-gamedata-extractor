@@ -2,22 +2,22 @@ node_modules/
 dist/
 *.log
 
-# Raw StarBreaker output: large, regenerable, and not the deliverable.
+# Extract dir: now only the _build.json marker (formerly raw StarBreaker output).
 extracted-data/
 extracted-data-full/
 # Per-channel copies (make CHANNEL=PTU → extracted-data-ptu/, data-ptu/).
 /extracted-data-*/
 
 # Parsed datasets are not committed here. Publishing a build is what
-# scripts/publish-dump.mjs does, into the dumps repo, where one commit per
-# build carrying its _build is what makes patch-over-patch diffs possible.
+# `make publish` (sc-gamedata publish) does, into the dumps repo, where one
+# commit per build carrying its _build is what makes patch-over-patch diffs possible.
 data/
 /data-*/
 
 overlays/
 overlay-sources.json
 
-# Checkout of the public dumps repo, managed by scripts/publish-dump.mjs.
+# Checkout of the public dumps repo, managed by sc-gamedata publish.
 .publish-repo/
 
 # ephemeral extraction output

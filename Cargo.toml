@@ -1,7 +1,7 @@
 # Rust implementation of the game-data pipeline. Duplicated (2026-11-23) from the
-# starorg-strings workspace's starorg-gamedata crate, which stays as is for now; the
-# TypeScript pipeline under src/ is unchanged and remains the producer of published dumps
-# until this one replaces it.
+# starorg-strings workspace's starorg-gamedata crate, which stays as is for now. Since
+# 2026-11-25 this crate is the only producer of the published dumps (the TypeScript
+# pipeline under src/ was removed; docs/plans/specs/rust-pipeline.md step 4).
 [workspace]
 resolver = "3"
 members = ["crates/sc-gamedata"]

@@ -141,6 +141,11 @@ line names no `sc-gamedata fetch` command, and the fzf line format is not ported
 
 ## Porting guide
 
+sc-gamedata deleted its TypeScript parse, diff, notes and publish on 2026-11-25 (step 4 of
+`docs/plans/specs/rust-pipeline.md`); the `*.ts` / `*.test.ts` sources this guide and the
+module docs name are at commit `4dc44d483`. Only `src/query/` and the export's
+`deflection.ts` / `engagement.ts` remain as TypeScript.
+
 Every port follows `src/domains/manufacturers.rs`.
 
 1. **One file, one slot.** Write `src/domains/<slot>.rs` exporting `pub static DOMAIN`,
