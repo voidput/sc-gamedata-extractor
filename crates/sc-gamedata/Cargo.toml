@@ -1,0 +1,38 @@
+[package]
+name = "sc-gamedata"
+description = "Star Citizen game data domains extracted from Data.p4k as JSON (Rust implementation of sc-gamedata)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Duplicated from starorg-strings crates/starorg-gamedata (same author), itself a port of this repo's TypeScript.
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sc-gamedata"
+path = "src/bin/sc-gamedata.rs"
+
+[[bin]]
+name = "gamedata-port"
+path = "src/bin/gamedata-port.rs"
+
+[dependencies]
+starbreaker-p4k.workspace = true
+starbreaker-datacore.workspace = true
+serde.workspace = true
+# preserve_order: object fields keep DataCore order, as in sc-gamedata (JS objects).
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+rayon.workspace = true
+clap.workspace = true
+# Raw deflate for the zips inside .socpak object containers (already in the lockfile via flate2).
+miniz_oxide = "0.9"
+# Gzipped snapshots (diff.rs).
+flate2.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
