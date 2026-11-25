@@ -101,11 +101,52 @@ loot-table pockets.
 ### D. Publish LIVE 4.10.201.48085
 
 - The post-exit hook was installed on 2026-11-25 with `SC_AUTO_PUBLISH=0`. On the next game exit
-  it extracts and dry-runs from `~/git/sc-gamedata-release` (`origin/main`). After the dry run
-  looks right, publish with `make -C ~/git/sc-gamedata-release publish CHANNEL=LIVE`.
+  it extracts and dry-runs from `~/git/worktrees/sc-gamedata-release` (`origin/main`). After the dry run
+  looks right, publish with `make -C ~/git/worktrees/sc-gamedata-release publish CHANNEL=LIVE`.
 - The release worktree runs `origin/main`. Until this repo's working changes (per-channel
   dirs, `SC_DATA_DIR`, `build.json`, the `.github` template, fire, item-sources) are merged,
   a publish from it has none of them. Merge first if the tag should carry `build.json`.
+
+### E. Reader feedback from starorg-codex (2026-11-25)
+
+The app's dump reader is built (not merged). Checking it against tag 4.10.200.58746 found the
+following.
+
+1. **One clean extraction per tag.**
+   - Problem: 4.10.200.58746 carries stale records in `game-ships`, `game-fps-weapons` and
+     `game-item-tags`, left over from an old `extracted-data/`. Its `game-item-tags` also lacks
+     `ammoItems` / `summary.withAmmo`. The app refuses those three files for that tag.
+   - Fixed going forward: the Rust pipeline (`feat/rust-switchover`) reads `Data.p4k` directly,
+     with no stale extract folder to pick up, and the hook always runs a full `make all` in the
+     release worktree. The 4.10.200 tag can't be republished, because that build is no longer
+     installed, so it stays partly refused.
+2. **`description` redaction. Decided 2026-11-25: option b.**
+   - Problem: `PROSE_FIELDS` strips `description` from commodities, manufacturers, missions,
+     refining (`description`, `rawDescription`, `refinedDescription`), ships and starmap. The
+     app shows descriptions (commodity detail; MCP and Developer mode show whole records), so
+     those six files are unusable for it today.
+   - Option a: keep `description` in those files. It reverses the reason for the strip: prose
+     is the most copyrightable content in the dumps and the part nothing else reads.
+   - Option b (**chosen by the user**): keep the strip. The app fills the text from `descriptionKey`
+     using the player's own local `global.ini`. It already reads the local `Data.p4k`, so it has
+     the file.
+3. **Reader rules.** Publish must keep these true:
+   - `build.json` `build` and `channel` must match the tag and channel. A build published as
+     PTU is never reused on LIVE.
+   - `files[]` `sha256`/`bytes` are used when present (else the git blob sha and size).
+   - `extractor.dirty: true` refuses the whole tag. The hook's clean release worktree never
+     sets it.
+   - `_schema` is checked when present, `_build` must equal the tag, and unknown fields are
+     ignored.
+4. **`game-npc-loadouts` shape:** top-level `actors`, `byLootTable` and `summary`, as in the
+   codex's `npc_loadouts.rs` on `origin/dev`. The Rust port is running on
+   `feat/rust-npc-loadouts`.
+5. **Compatible as-is**, the same shape as the app's 4.10.201 output:
+   - ammo, armor, blueprints, cargo, consumables, containers, item-sources, law, loot,
+     mining, mining-spawns, quantum, reputation, salvage, ship-components, shops, weapons,
+     wikelo-trades;
+   - also commodities, manufacturers, missions, refining and starmap, which are blocked only
+     by point 2.
 
 ## Order
 
