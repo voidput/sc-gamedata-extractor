@@ -68,6 +68,8 @@ registry! {
 
     missions, // missions.ts
 
+    npc_loadouts, // Rust only (starorg-codex npc_loadouts.rs)
+
     quantum, // quantum.ts
 
     refining, // refining.ts

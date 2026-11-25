@@ -1228,6 +1228,7 @@ const TS_ORDER: &[&str] = &[
     "game-law",
     "game-consumables",
     "game-fire",
+    "game-npc-loadouts",
 ];
 
 /// Every registered domain, in `pipeline.ts` order (any the order misses go last).

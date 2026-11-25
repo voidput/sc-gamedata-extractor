@@ -92,11 +92,59 @@ loot-table pockets.
   [dump-enhancements](dump-enhancements.md), that assumption goes in an `_assumptions` note and
   any share field gets the `Estimate` suffix, unless the app's shape fixes the name. In that
   case, record the divergence here.
-- Work: a TS domain plus a Rust domain in `crates/sc-gamedata`. The layout differs from the
-  starorg crate: here `helpers_items.rs` is one file, not a `helpers_items/` module. Golden
-  check: on LIVE 4.10.201.48085, the Rust output must be byte-identical to starorg-codex's and
-  the TS output must match it. Measure the dump growth with `publish-dry`.
+- Work: Rust only (the TS parse is being retired on `feat/rust-switchover`), a domain in
+  `crates/sc-gamedata`. The layout differs from the starorg crate: here `helpers_items.rs` is
+  one file, not a `helpers_items/` module. Golden check: on LIVE 4.10.201.48085, the Rust
+  output must be byte-identical to starorg-codex's. Measure the dump growth with `publish-dry`.
 - Redaction: names and keys only, no prose. Add any description fields to `PROSE_FIELDS`.
+
+#### Built (2026-11-25)
+
+- `crates/sc-gamedata/src/domains/npc_loadouts.rs`, ported from starorg-codex `origin/dev`
+  (`3d6a09e`). Its imports resolve unchanged here (`helpers_items::{item_common, tags}`). It is
+  registered in `domains/mod.rs` and `TS_ORDER` (last). `GOLDEN_EXTRACTION_FILTERS` gains
+  `**/actor/actors/**` and `**/loadoutkits/**`. On LIVE these add 2738 records, and none of
+  them reach another domain's own filters. The loose files come from `files()`
+  (`Data/Scripts/Loadouts/**`), which keeps the archive open for the run.
+- Shape: `{ _assumptions, actors[], byLootTable, summary }`. Each actor has `class`, `name`
+  (words from the class name), `faction`, `lootTable`, `lootable`, `wear {min,max}` and
+  `items[] {item, name, slot, chance, requires}`. `GearGroup` is internal: the file is lean
+  and has no per-group detail, the same as the codex.
+- Golden (LIVE 4.10.201.48085, codex `gamedata-port extract --domain npc-loadouts` built
+  from `origin/dev`): the actors (2162 with gear, of 2312), `byLootTable` (19) and `summary`
+  are equal, and so are every actor's item set, slots and `requires`. The differences:
+  - `_assumptions` (3 lines);
+  - 60 `items[].name` values on 14 items, where the codex has no name. This crate's string
+    table also resolves keys that exist only with the `,P` suffix
+    (`item_Name_doom_combat_medium_helmet_01_01_01,P` → "Death's Head Helmet"), and the codex's
+    does not. One of them is the game's own unfinished string, "DYL - jacket - name", which
+    `game-armor` and `game-item-tags` carry too (the shared placeholder rule does not catch it);
+  - 135 `items[].chance` values on 87 actors, all lower here (12 actors' items change order
+    within a slot as a result). The codex adds an item's chance once per copy inside one
+    option, so a rifle picked half the time with two magazines of one class gave the
+    magazine a chance of 1. Here an item an option holds more than once is there as often as
+    the option is (`flat` in `npc_loadouts.rs`, with a test). The codex needs the same fix.
+- Review (2026-11-25): a separate Python reading of the raw LIVE records and loadout files
+  (2312 actors, 426 kit records, 3647 loadout files) gives the same item set and chance for
+  all 22,247 actor items, the same 698 unlootable drops, and the same `lootable`,
+  `lootTable` and `faction`. A full parse before and after the change differs only by the
+  new file (30 → 31 files, 51.04 → 55.30 MB pretty).
+- Divergences: `chance` keeps the codex name, not `chanceEstimate`, because the app reads it
+  as-is. The `_assumptions` note marks it as an estimate (even picks, gated-before-ungated
+  pooling). `_assumptions` is an extra top-level key, which readers ignore.
+- Size: 4,265,834 B pretty, 2,673,939 B compact, 180,478 B gzipped. There are no prose
+  fields, so `PROSE_FIELDS` is unchanged.
+- Known gaps:
+  - items that are no personal gear are left out, which includes the trophies creature
+    actors hold in their ports (`Harvestable_Trophy_1H_KopionHorn`, Valakkar fangs,
+    Quasigrazer eggs; 36 entries of type `Misc/Harvestable`);
+  - `chance` is not rounded: 29 values that should be 1 print as `0.9999999999999999` or
+    `0.9999999999999998`, as in the codex;
+  - `actors[].name` is words made from the class name, not a string from the records, and
+    the two `requires` labels in the file are English text this code writes
+    (`outfit picked by the mission (Outfits/S42/Work)`).
+- Warning on LIVE: the records name 65 loadout files that the archive lacks (creature
+  loadouts such as `Qausi_graser/tauroch_*.xml`). They are left out, as in the codex.
 
 ### D. Publish LIVE 4.10.201.48085
 
