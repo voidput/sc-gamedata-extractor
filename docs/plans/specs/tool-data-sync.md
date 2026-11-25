@@ -181,6 +181,11 @@ use, and 310 GB on `local-path`. See [ideas](../later/ideas.md).
 5. **Bindscape.** Merge `feat/keybinds-domain` (game-keybinds and game-attributes), publish, and
    check that the labels survive `redactProse`. Then add `data-sync.yml`. PTU support (an
    `actions-ptu.json` and a toggle) is optional; keybinds rarely differ between channels.
+   - The Rust port exists on `feat/rust-keybinds` (`crates/sc-gamedata/src/domains/keybinds.rs`,
+     `attributes.rs`, `src/xml.rs`). It is byte-identical to the TypeScript on LIVE
+     4.10.201.48085 (ignoring `_extracted`), the scsticks importers produce the same
+     `actions.json` and `attributes.json` from it, and publish redaction leaves both files
+     unchanged. Merge that branch instead of the TypeScript one.
 6. **MCsim, fire.** `data-sync.yml` is in place but skips: `build_fire.py` still reads raw
    records (`entities/scitem/ships`, missiles, `roomsystem/firehazard`) and never reads
    `game-fire.json`. Port it to bake from `game-fire` + `game-ships` + `game-ship-components` +

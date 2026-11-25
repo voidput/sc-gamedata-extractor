@@ -404,6 +404,8 @@ From game files, verified against a real extraction:
 | `game-loot` | 220 loot tables and 267 archetypes in both the original and V3 formats, with weights and tag paths, plus pool filters and holiday loot |
 | `game-law` | 43 crimes with felony status, prison merits, record lifetime and fines; 13 jurisdictions with base fine, prohibited goods, controlled substance limits and impound rules |
 | `game-consumables` | 231 medpens, drugs, food and drink with total health, hunger, thirst, blood drug level, gas and buff effects |
+| `game-keybinds` | 50 action maps and 1104 actions with default keyboard, mouse, gamepad and joystick bindings, activation modes, and the 3 option trees (invert, curve, sensitivity groups), from `Data/Libs/Config/defaultProfile.xml` |
+| `game-attributes` | 345 option rows (334 names): default value, console variable, platform and confirmation flag per game option, from `Data/Libs/Config/Profiles/default/attributes.xml` |
 
 Refinery numbers are not in the game files. Every DataCore record and every
 text and config file in `Data.p4k` was searched: the client ships the method
