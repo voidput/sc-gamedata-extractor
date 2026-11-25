@@ -171,6 +171,46 @@ Built Rust-only (the TS parse is being retired on `feat/rust-switchover`), measu
     - The golden compare flags item-sources (new fields) and item-obtain (no golden) until the
       goldens are rebuilt.
 
+**Item 5 (2026-11-25), Rust only** (`crates/sc-gamedata`, branch `feat/rust-mining`, no TS
+per the switchover), measured on LIVE 4.10.201.48085. Accepted: `ores.sadaryx` has no belt
+and two spots, `v3slotpreset_rockcracker` and `_sandbox` (slotShare 1, place "Rock Cracker,
+Nyx", `curated`). Size: +190 KB compact on mining-spawns (666,497 to 856,304 B; gzip 25,808
+to 35,890), +2.7 KB on commodities.
+
+- **Deviation:** the per-ore data is a new top-level `ores` map keyed by `oreKey`, not
+  `oreLocations[ore].belts[]`. `oreLocations` stays a list of names, because the app's Dev
+  table reads it as an index.
+  - Each entry has `elements[]`, `resources[]`, `belts[]` and `spots[]`.
+  - `belts[]` sums the spawn groups per (location, rock). Each belt has
+    `place`/`placeSource`, `system`, `kind`, `tier`, `spawnShare` and the percent range.
+  - A spawn entry counts once. 55 of 268 rocks list an element twice in their composition
+    (Quantainium at 5.7-11.7 and 28.3-78.3), so summing `oreSpawns` rows doubles the share:
+    the app's `query/mined.rs` `report` still does that and needs the same fix. The percent
+    range is the lowest and highest bound over the parts, not their total.
+  - `spots[]` gives the best rock per slot preset: `area`, `rock`, `slotShare`, `configs`.
+    It skips slots of weight 0.
+- `oreKey` is `ore_core` of the element key. `resource` and `minedAs[]` come from the
+  element's own `resourceType`, not from name matching, since the spellings differ:
+  `aluminium_ore` is `Ore_Aluminum`, `sileron_ore` is `Ore_Stileron`. The data also says
+  that `flowstone` is `Aphorite` and `testelement_balance` is `Copper`.
+- `system` is now fixed on both `locations[]` and `oreSpawns[]` (this is not additive):
+  - `Aaronhalo` and `Stanton2c` become `Stanton`.
+  - The non-system stems (`Lagrange`, `Asteroidcluster`, `Resourcerush`, …) are dropped,
+    so 147 oreSpawns rows have no system.
+  - A stem counts as a system when it starts with a star map system's name (with Stanton,
+    Pyro and Nyx as the fallback), so a system a build adds is kept. `AaronHalo` to
+    `Stanton` is curated.
+  - The records don't say which system the Lagrange points are in.
+- `locations[].place` is new, and `belt_place` keeps stems that aren't systems:
+  `ResourceRush_Gold` reads `Resource Rush Gold` (the app gives `Gold`).
+- `_assumptions` has four entries: `spawnShare` can't be compared across mining kinds, the
+  percent range spans a rock's parts, how `place` is built per `placeSource`, and where
+  `system` comes from.
+- **Open:**
+  - `spots[].place` uses only the app's rock-cracker rule, so the other area places wait
+    on 4a (join `spots[].area` to `game-item-sources` `areas[].name`).
+  - The starorg-strings Rust parity change is not done.
+
 ## Items, in build order
 
 | # | Item | Effort | Size per build |
