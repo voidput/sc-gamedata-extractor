@@ -1,0 +1,137 @@
+# Fan-out: tell the downstream tools that a game build was published here.
+# Installed into sc-gamedata-dumps by scripts/publish-dump.mjs (template copy).
+# Sends repository_dispatch "gamedata-published" {tag, build, channel} to each
+# tool; each tool's data-sync.yml bakes the datasets at that tag.
+name: fanout
+
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Build tag to fan out (e.g. 4.10.200.58746)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      build: ${{ steps.meta.outputs.build }}
+      channel: ${{ steps.meta.outputs.channel }}
+      dispatch: ${{ steps.meta.outputs.dispatch }}
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "release" ]; then tag="$RELEASE_TAG"; else tag="$INPUT_TAG"; fi
+          if ! printf '%s' "$tag" | grep -Eq '^[0-9]+(\.[0-9]+)+$'; then
+            echo "::error::tag '$tag' is not a dotted build string"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          sparse-checkout: /build.json
+          sparse-checkout-cone-mode: false
+
+      - name: Read build.json
+        id: meta
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PRERELEASE: ${{ github.event.release.prerelease }}
+          EVENT_RELEASE_NAME: ${{ github.event.release.name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          build="$TAG"
+          if [ -f build.json ]; then
+            channel="$(jq -r '.channel // empty' build.json | tr '[:lower:]' '[:upper:]')"
+            file_build="$(jq -r '.build // empty' build.json)"
+            if [ -n "$file_build" ] && [ "$file_build" != "$TAG" ]; then
+              echo "::warning::build.json build '$file_build' differs from tag '$TAG'; using tag"
+            fi
+          else
+            channel=""
+          fi
+          if [ -z "$channel" ]; then
+            # Older tags have no build.json: read the channel from the release
+            # title ("<patch> <CHANNEL> (<build>)" or "<CHANNEL> <build>"), and
+            # only if that names none, from the prerelease flag.
+            if [ "$EVENT_NAME" = "release" ]; then
+              prerelease="$EVENT_PRERELEASE"
+              name="$EVENT_RELEASE_NAME"
+            else
+              release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")"
+              prerelease="$(jq -r '.prerelease' <<<"$release")"
+              name="$(jq -r '.name // empty' <<<"$release")"
+            fi
+            channel="$(printf '%s\n' "$name" | grep -oEw 'TECH-PREVIEW|HOTFIX|EPTU|PTU|LIVE' | head -n 1 || true)"
+            if [ -n "$channel" ]; then
+              echo "::notice::no channel in build.json; release title -> $channel"
+            else
+              if [ "$prerelease" = "true" ]; then channel=PTU; else channel=LIVE; fi
+              echo "::notice::no channel in build.json or release title; prerelease=$prerelease -> $channel"
+            fi
+          fi
+          case "$channel" in
+            LIVE|PTU) dispatch=true ;;
+            *) dispatch=false; echo "::notice::channel $channel is not dispatched (LIVE/PTU only)" ;;
+          esac
+          {
+            echo "tag=$TAG"
+            echo "build=$build"
+            echo "channel=$channel"
+            echo "dispatch=$dispatch"
+          } >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG build=$build channel=$channel dispatch=$dispatch"
+
+  dispatch:
+    needs: meta
+    if: needs.meta.outputs.dispatch == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [voidput/snares, voidput/MCsim, voidput/scsticks]
+    steps:
+      - name: Dispatch gamedata-published
+        env:
+          REPO: ${{ matrix.repo }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          BUILD: ${{ needs.meta.outputs.build }}
+          CHANNEL: ${{ needs.meta.outputs.channel }}
+          TOKEN: ${{ secrets.TOOLS_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            echo "::error::secret TOOLS_DISPATCH_TOKEN is not set"
+            exit 1
+          fi
+          body="$(jq -nc --arg tag "$TAG" --arg build "$BUILD" --arg channel "$CHANNEL" \
+            '{event_type: "gamedata-published", client_payload: {tag: $tag, build: $build, channel: $channel}}')"
+          code="$(curl -sS -o resp.txt -w '%{http_code}' -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$REPO/dispatches" \
+            -d "$body")"
+          if [ "${code:0:1}" != "2" ]; then
+            echo "::error::dispatch to $REPO failed: HTTP $code"
+            cat resp.txt || true
+            exit 1
+          fi
+          echo "::notice::dispatched $CHANNEL $BUILD to $REPO (HTTP $code)"

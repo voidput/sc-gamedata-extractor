@@ -43,3 +43,19 @@ Citizen®, Squadron 42®, Roberts Space Industries®, and Cloud Imperium® are
 registered trademarks of Cloud Imperium Rights LLC. All rights reserved.
 
 It will be removed on request from Cloud Imperium Games. See [NOTICE](NOTICE).
+
+## Automation
+
+`.github/workflows/fanout.yml` runs when a release is published or edited (or by
+hand with a `tag` input). It reads `build.json` at that tag (older tags have
+none: it falls back to the channel named in the release title, then to the
+prerelease flag: prerelease = PTU, else LIVE) and sends a
+`repository_dispatch` event `gamedata-published` with `{tag, build, channel}` to
+[snares](https://github.com/voidput/snares),
+[MCsim](https://github.com/voidput/MCsim) and
+[scsticks](https://github.com/voidput/scsticks), whose `data-sync.yml` re-bakes
+from the datasets at that tag. Only LIVE and PTU are dispatched; other channels
+are logged and skipped. One failing tool does not block the others.
+
+It needs the repo secret `TOOLS_DISPATCH_TOKEN`: a fine-grained PAT (or GitHub
+App token) with **Contents: write** on those three repos only.

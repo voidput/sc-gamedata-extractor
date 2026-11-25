@@ -5,11 +5,14 @@ dist/
 # Raw StarBreaker output: large, regenerable, and not the deliverable.
 extracted-data/
 extracted-data-full/
+# Per-channel copies (make CHANNEL=PTU → extracted-data-ptu/, data-ptu/).
+/extracted-data-*/
 
 # Parsed datasets are not committed here. Publishing a build is what
 # scripts/publish-dump.mjs does, into the dumps repo, where one commit per
 # build carrying its _build is what makes patch-over-patch diffs possible.
 data/
+/data-*/
 
 overlays/
 overlay-sources.json
@@ -25,3 +28,6 @@ exports/
 
 # Per-build dataset copies kept by parse, for patch-over-patch diffs.
 snapshots/
+
+**/.obsidian/
+/target/
