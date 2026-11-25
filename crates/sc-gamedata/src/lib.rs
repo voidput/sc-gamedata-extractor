@@ -11,6 +11,8 @@
 //!   supplied by the caller), installed packs, loading a pack from disk;
 //! - [`search_index`] (`search-index.ts`): `game-search-index.json`, derived from the
 //!   item-tags and ships datasets;
+//! - [`item_obtain`]: `game-item-obtain.json`, loot odds and other sources per item, derived
+//!   from the item-tags, loot, item-sources, blueprints and Wikelo datasets;
 //! - [`cryxml`] (`cryxml.ts`): CryXmlB documents in raw archive files;
 //! - [`glob`] (`glob.ts`), [`collate`] (`Intl.Collator`/`localeCompare` orders);
 //! - [`output`]: `JSON.stringify(_, null, 2)`-exact writing and the dataset header;
@@ -34,6 +36,8 @@ pub mod helpers_gameplay;
 pub mod helpers_items;
 pub mod helpers_ships;
 pub mod helpers_world;
+// game-item-obtain.json: loot odds per item, derived from the datasets (spec item 3).
+pub mod item_obtain;
 pub mod js;
 pub mod localization;
 pub mod output;

@@ -72,9 +72,144 @@ pub struct SpawnConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LootArea {
     pub name: String,
+    /// The kind of place the preset is for (item 4a), when its name says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<AreaPlace>,
+    /// How the preset was written: `v3`, `multi` or `classic`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<&'static str>,
+    /// A test preset (no real place); omitted when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_test: bool,
+    /// `heuristic` (a word of the name, [`AREA_PLACES`]) or `curated` (a hand check of the
+    /// assets); omitted with `place`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place_source: Option<&'static str>,
     pub configs: Vec<SpawnConfig>,
+}
+
+/// An area's kind of place: `kind` is the name word that placed it (`distributioncentre`),
+/// `label` the place's short name (`Distribution centres`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AreaPlace {
+    pub label: &'static str,
+    pub kind: &'static str,
+}
+
+/// Slot preset name words (a word starting with the key) and the kind of place they name;
+/// the first match wins, so order matters. Ported from starorg-codex
+/// `crates/starorg-mcp/src/hints.rs` (`AREA_PLACES`).
+pub const AREA_PLACES: &[(&str, &str)] = &[
+    ("cave", "Caves"),
+    ("distributioncentre", "Distribution centres"),
+    ("dcdelving", "Distribution centres"),
+    ("asddelving", "ASD facilities"),
+    ("colonialoutpost", "Outposts"),
+    ("techoutpost", "Outposts"),
+    ("derelictoutpost", "Derelict outposts"),
+    ("spacederelict", "Derelicts"),
+    ("derelict", "Derelicts"),
+    ("junksite", "Junk sites"),
+    ("asteroidbase", "Asteroid bases"),
+    ("contestedzone", "Contested zones"),
+    ("ghostarena", "Contested zones"),
+    ("ugfs", "Underground facilities"),
+    ("orbitalplatform", "Orbital platforms"),
+    ("dishalignmentfacility", "Orbital platforms"),
+    ("shippingcontainer", "Shipping containers"),
+    ("station", "Stations"),
+    ("kareah", "Security Post Kareah"),
+    ("covalex", "Covalex hub"),
+    ("jumptown", "Jumptown"),
+    ("floatingislands", "Floating islands"),
+    ("levski", "Levski"),
+    ("battaglia", "Battaglia"),
+    ("stormbreaker", "Stormbreaker"),
+    ("kaboos", "Kaboos"),
+    ("orbageddon", "Orbageddon"),
+    ("apexgeddon", "Apexgeddon"),
+    ("vanduulinc", "Vanduul incursion"),
+    ("welcometonyx", "Nyx"),
+    ("military", "Military sites"),
+    ("criminal", "Criminal hideouts"),
+];
+
+/// Preset words that name no place (dropped before [`AREA_PLACES`] is matched).
+const PRESET_WORDS: &[&str] = &[
+    "lootgeneration",
+    "slotpreset",
+    "multislotpreset",
+    "v3slotpreset",
+    "multiconfig",
+    "harvestable",
+    "loot",
+];
+
+/// What an area's name says about it (item 4a).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AreaClass {
+    pub place: Option<AreaPlace>,
+    pub family: Option<&'static str>,
+    pub is_test: bool,
+    pub place_source: Option<&'static str>,
+}
+
+/// Classify a slot preset name (`v3slotpreset_distributioncentres_highsecurtiy`,
+/// `caves/loot_caves_occupied_rock`), as the app's `area_place_name` does (but for
+/// `contest*` words, which are not tests here): the Rock Cracker
+/// (only Nyx's asset paths reach it; `curated`, from `query/mined.rs` `area_place`), else
+/// no place for test and `special_*` event presets, else the first [`AREA_PLACES`] key a
+/// non-preset word starts with (`heuristic`). `family` comes from the preset words
+/// (`loot_tree.rs` `Family`).
+pub fn classify_area(area: &str) -> AreaClass {
+    let a = area.to_ascii_lowercase();
+    let all: Vec<&str> = a.split(['/', '_', '-']).filter(|w| !w.is_empty()).collect();
+    let any = |w: &str| all.contains(&w);
+    let family = if any("v3slotpreset") {
+        Some("v3")
+    } else if any("multislotpreset") || any("multiconfig") {
+        Some("multi")
+    } else if any("slotpreset") || any("lootgeneration") {
+        Some("classic")
+    } else {
+        None
+    };
+    let words: Vec<&str> = a
+        .split(['/', '_'])
+        .filter(|w| !w.is_empty() && !PRESET_WORDS.contains(w))
+        .collect();
+    let has = |k: &str| words.iter().any(|w| w.starts_with(k));
+    // `contestedzones` holds the letters of "test" and is no test preset (the app's rule
+    // reads it as one, which leaves its `contestedzone` and `ghostarena` keys unreachable).
+    let is_test = words
+        .first()
+        .is_some_and(|w| w.contains("test") && !w.contains("contest"))
+        || has("test");
+    let (place, place_source) = if a.contains("rockcracker") {
+        (
+            Some(AreaPlace {
+                label: "Rock Cracker, Nyx",
+                kind: "rockcracker",
+            }),
+            Some("curated"),
+        )
+    } else if is_test || words.first() == Some(&"special") {
+        (None, None)
+    } else {
+        match AREA_PLACES.iter().find(|(k, _)| has(k)) {
+            Some((kind, label)) => (Some(AreaPlace { label, kind }), Some("heuristic")),
+            None => (None, None),
+        }
+    };
+    AreaClass {
+        place,
+        family,
+        is_test,
+        place_source,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -347,7 +482,18 @@ fn parse_area(record: &GameRecord, ctx: &Context<'_>) -> Option<LootArea> {
     } else if let Some(c) = parse_config(None, Vec::new(), record.value.get("subConfig"), ctx) {
         configs.push(c);
     }
-    (!configs.is_empty()).then_some(LootArea { name, configs })
+    if configs.is_empty() {
+        return None;
+    }
+    let class = classify_area(&name);
+    Some(LootArea {
+        name,
+        place: class.place,
+        family: class.family,
+        is_test: class.is_test,
+        place_source: class.place_source,
+        configs,
+    })
 }
 
 /// `contractAwards`: every item a contract generator record awards.
@@ -431,6 +577,8 @@ struct Summary {
     loot_slots: usize,
     fixed_slots: usize,
     contract_awards: usize,
+    /// Areas no name word places (test presets aside): a new CIG preset shows up here.
+    unplaced_areas: Vec<String>,
 }
 
 impl Domain for ItemSources {
@@ -516,6 +664,11 @@ impl Domain for ItemSources {
             loot_slots: slots.iter().filter(|s| s.loot.is_some()).count(),
             fixed_slots: slots.iter().filter(|s| s.contains.is_some()).count(),
             contract_awards: awards.len(),
+            unplaced_areas: areas
+                .iter()
+                .filter(|a| a.place.is_none() && !a.is_test)
+                .map(|a| a.name.clone())
+                .collect(),
         };
         let mut body = Map::new();
         field(&mut body, "areas", &areas)?;
@@ -651,6 +804,13 @@ mod tests {
         let military = &body["areas"][0];
         assert_eq!(military["name"], "v3slotpreset_loot_military");
         assert_eq!(
+            military["place"],
+            json!({"label": "Military sites", "kind": "military"})
+        );
+        assert_eq!(military["family"], "v3");
+        assert_eq!(military["placeSource"], "heuristic");
+        assert!(military.get("isTest").is_none());
+        assert_eq!(
             military["configs"][0]["spawnTags"],
             json!(["LootSize/Large", "LootContents/Weapons"])
         );
@@ -668,8 +828,45 @@ mod tests {
         assert_eq!(rack_slot["contains"], json!(["behr_lmg_ballistic_01"]));
         assert_eq!(
             body["summary"],
-            json!({"areas": 1, "configs": 2, "slots": 2, "lootSlots": 1, "fixedSlots": 1, "contractAwards": 1})
+            json!({"areas": 1, "configs": 2, "slots": 2, "lootSlots": 1, "fixedSlots": 1, "contractAwards": 1, "unplacedAreas": []})
         );
+    }
+
+    #[test]
+    fn classifies_areas_by_their_name_words() {
+        let place = |a: &str| classify_area(a).place.map(|p| p.label);
+        assert_eq!(
+            place("v3slotpreset_distributioncentres_highsecurtiy"),
+            Some("Distribution centres")
+        );
+        assert_eq!(place("caves/loot_caves_occupied_rock"), Some("Caves"));
+        // First match wins: `derelictoutpost` before `derelict`, `colonialoutpost` is an outpost.
+        assert_eq!(place("slotpreset_derelictoutpost_01"), Some("Derelict outposts"));
+        assert_eq!(place("lootgeneration_colonialoutpost_a"), Some("Outposts"));
+        let rc = classify_area("v3slotpreset_rockcracker");
+        assert_eq!(rc.place.map(|p| p.label), Some("Rock Cracker, Nyx"));
+        assert_eq!(rc.place_source, Some("curated"));
+        assert_eq!(rc.family, Some("v3"));
+        // A theme, not a place; test and event presets get none.
+        let generic = classify_area("v3slotpreset_loot_generic");
+        assert_eq!((generic.place, generic.is_test), (None, false));
+        let test = classify_area("cave_full_test");
+        assert_eq!((test.place, test.is_test), (None, true));
+        // "contestedzones" is not a test preset, and the ghost arena is filed under it.
+        for a in [
+            "contestedzones/contestedzone_1a_rewardroom_001",
+            "contestedzones/ghostarena_01",
+            "v3slotpreset_contestedzones",
+        ] {
+            let c = classify_area(a);
+            assert_eq!(c.place.map(|p| p.label), Some("Contested zones"), "{a}");
+            assert!(!c.is_test, "{a}");
+        }
+        assert_eq!(place("special_holidaybox"), None);
+        assert!(!classify_area("special_holidaybox").is_test);
+        assert_eq!(classify_area("multislotpreset_station_x").family, Some("multi"));
+        assert_eq!(classify_area("lootgeneration_slotpreset_kareah").family, Some("classic"));
+        assert_eq!(classify_area("caves/loot_caves").family, None);
     }
 
     #[test]

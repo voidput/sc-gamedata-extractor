@@ -918,6 +918,24 @@ fn other_tables_memo(
     out
 }
 
+/// Lower-case names of the loot tables some area slot rolls (plus `""` for slots that roll
+/// none, as the TypeScript collects them): [`other_tables`] skips these.
+pub fn used_tables(datasets: &Datasets) -> HashSet<String> {
+    datasets
+        .areas
+        .iter()
+        .flatten()
+        .flat_map(|a| a.configs.iter())
+        .flat_map(|c| c.slots.iter())
+        .map(|s| {
+            s.loot
+                .as_ref()
+                .map(|l| l.table.to_lowercase())
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------- bulk
 
 /// Where a slot is: area, config and slot positions (the order [`spawn_hits`] visits).
@@ -1195,6 +1213,42 @@ impl<'a> BulkObtain<'a> {
             .collect()
     }
 
+    /// [`other_tables`] of one item (the `otherTables` of [`obtain`]), sharing the pool
+    /// sizes every item and thread counts. `used` is [`used_tables`] of the datasets.
+    pub fn other_tables(&self, item: &ItemTags, used: &HashSet<String>) -> Vec<RollPath> {
+        let Some(index) = self.index else {
+            return Vec::new();
+        };
+        if loot_eligibility(&item.tags).can_loot != Some(true) {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for table in &index.tables {
+            if used.contains(&table.name.to_lowercase()) {
+                continue;
+            }
+            let paths = table_rolls(
+                index,
+                &table.name,
+                item,
+                RollContext {
+                    pool: Some(&self.lootable),
+                    memo: Some(&self.memo),
+                    entry_pools: Some(&self.entry_pools),
+                    ..Default::default()
+                },
+            );
+            if let Some(first) = paths.first() {
+                let mut p = first.clone();
+                p.per_roll = paths.iter().map(|x| x.per_roll).sum();
+                p.share = paths.iter().map(|x| x.share).sum();
+                out.push(p);
+            }
+        }
+        sort_desc(&mut out, |p| p.per_roll);
+        out
+    }
+
     /// The item's shop rows, placed and dated (the `shops` of [`obtain`] without `at`).
     pub fn shops(&self, item: &ItemTags) -> Vec<LocatedShop> {
         let Some(all) = self.datasets.shops.as_deref() else {
@@ -1398,19 +1452,7 @@ pub fn obtain(
     let cls = item.class_name.to_lowercase();
     let memo = PoolMemo::default();
     let spawns = spawn_hits_memo(datasets, loot_index, item, Some(&memo));
-    let used: HashSet<String> = datasets
-        .areas
-        .iter()
-        .flatten()
-        .flat_map(|a| a.configs.iter())
-        .flat_map(|c| c.slots.iter())
-        .map(|s| {
-            s.loot
-                .as_ref()
-                .map(|l| l.table.to_lowercase())
-                .unwrap_or_default()
-        })
-        .collect();
+    let used = used_tables(datasets);
     let awards: Vec<ContractAward> = datasets
         .contract_awards
         .iter()
