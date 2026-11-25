@@ -16,7 +16,7 @@
 #   SC_ROOT              [the Makefile's SC_ROOT]  install with LIVE/ PTU/ inside
 #   SC_RELEASE_CHANNELS  [LIVE PTU]
 #   SC_AUTO_PUBLISH      [0]  1 publishes; 0 stops after publish-dry and notifies
-#   SC_RELEASE_DIR       [~/git/sc-gamedata-release]  the clean worktree
+#   SC_RELEASE_DIR       [~/git/worktrees/sc-gamedata-release]  the clean worktree
 #   SC_DUMPS_REMOTE      [git@github.com:voidput/sc-gamedata-dumps.git]
 #   SC_HOOK_DIR          [/mnt/games/star-citizen]  where sc-postexit.sh / sc-prelaunch.sh live
 #   SC_RELEASE_DELAY     [60]  seconds to wait before `run` looks, so wine processes settle
@@ -30,7 +30,7 @@ SELF="$HERE/$(basename "${BASH_SOURCE[0]}")"
 SC_ROOT="${SC_ROOT:-/mnt/games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen}"
 CHANNELS="${SC_RELEASE_CHANNELS:-LIVE PTU}"
 AUTO="${SC_AUTO_PUBLISH:-0}"
-RELEASE_DIR="${SC_RELEASE_DIR:-$HOME/git/sc-gamedata-release}"
+RELEASE_DIR="${SC_RELEASE_DIR:-$HOME/git/worktrees/sc-gamedata-release}"
 DUMPS_REMOTE="${SC_DUMPS_REMOTE:-git@github.com:voidput/sc-gamedata-dumps.git}"
 HOOK_DIR="${SC_HOOK_DIR:-/mnt/games/star-citizen}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}"

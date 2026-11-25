@@ -21,3 +21,4 @@ Plain-markdown index. Obsidian index: [Home.md](Home.md).
 - [Rust pipeline](plans/specs/rust-pipeline.md) — Rust crate here as the dataset producer (active)
 - [Tool data sync](plans/specs/tool-data-sync.md) — dumps hub fans out to snares, MCsim, Bindscape via GHA, LIVE + PTU (active)
 - [Dump reuse](plans/specs/dump-reuse.md) — build.json manifest, _schema, game-npc-loadouts for starorg-codex reuse (draft)
+- [Consumer datasets](plans/specs/consumer-datasets.md) — dataset asks from snares/MCsim/Bindscape/sc-telemetry: game-fire gaps, game-ordnance, ship capabilities (draft)
