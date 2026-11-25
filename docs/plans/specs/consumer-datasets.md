@@ -54,6 +54,16 @@ Rules, as in [dump-enhancements](dump-enhancements.md):
 (on the Starfarer, Starfarer Gemini, Starfarer Teach's and Starlite). Add them in the same shape
 as the other items: `health`, `damageMultipliers`, `ignite`, `deathExplosion`, and so on.
 
+**Built (Rust, branch `feat/rust-fire-caps`).** Items whose `AttachDef.Type` is `FuelTank`,
+`QuantumFuelTank` or `ExternalFuelTank` are listed whatever their fire path, when the record
+has a health pool or a death explosion. The fuel pods (`fuelpod_misc_standard`,
+`fuelpod_stor_secure`) are `ExternalFuelTank`, so that type is included too. LIVE
+4.10.201.48085: 33 tanks added (31 `ExternalFuelTank`, 2 `FuelTank`), items 490 → 523. All four
+named parts are present, e.g. `misc_fuelrefinery_l`: health 10000, `deathExplosion` physical
+500, radius 2.5–25. The other 340 tanks (183 `FuelTank`, all 157 `QuantumFuelTank`: each ship's
+internal `HTNK_*` / `QTNK_*`) have no `SHealthComponentParams`, so they are left out: a row for
+them would hold a name and nothing else, and `build_fire.py` skips parts without health.
+
 ## 2. `game-fire`: hit detonation for explosives (MCsim)
 
 For Missile, Bomb and SpaceMine items, add
@@ -63,6 +73,15 @@ For Missile, Bomb and SpaceMine items, add
 Bombs are not in `game-weapons.missiles`, so today `bomb_s03_fski_thunderball`, `bomb_s05_fski`
 and `bomb_s10_fski_colossus` bake with a hit total of 0. The raw values were 27000, 46702 and
 568297. With `hitExplosion`, MCsim no longer needs `game-weapons` for explosives.
+
+**Built (Rust, branch `feat/rust-fire-caps`).** `hitExplosion` is read from
+`SCItemMissileParams`, `SCItemBombParams` or `SCItemSpaceMineParams` (by item type),
+keeping only the damage types that are not zero, and the item is listed when it has one.
+`summary.withHitExplosion` counts them. LIVE 4.10.201.48085: 72 items (67 missiles, 3 bombs,
+2 mines). Hit totals: thunderball 27000, s05 46702, colossus 568296.99. All 67 missile
+totals equal `game-weapons.missiles[].damageTotal`.
+Size with item 1 (extract, not `publish-dry`): `game-fire.json` 597885 → 634404 bytes
+(+6.1%), 33212 → 35363 gzip -9.
 
 ## 3. `game-ordnance` (MCsim, new dataset)
 
@@ -164,6 +183,15 @@ All are derived from the default loadout. The exact rules from sc-telemetry
   `cargo_scu`). Upstream emits one object per vehicle record and leaves the merge to the client.
 - sc-telemetry prefers `vehicle.capabilities` when it is present and falls back to
   `derive_caps` otherwise.
+
+**Built (Rust, branch `feat/rust-fire-caps`).** Every vehicle has `capabilities` with the
+eleven booleans and `cargo_scu` (a number, or `null`). `cargoKnown: false` is emitted when
+`cargo` is false, because then there is no cargo grid and no SCU, so "none" and "unknown"
+cannot be told apart. `game-salvage` lists no vehicles, so `salvage` comes from the role
+alone. LIVE 4.10.201.48085: across 1104 vehicles, sc-telemetry's `derive_caps` (run on the same
+`game-ships.json`) gives 0 mismatches on every key. 668 vehicles have `cargoKnown: false`,
+among them `RSI_Perseus` and `MISC_Starlite`, which have no cargo grid in their stock loadout.
+Size: `game-ships.json` 6311719 → 6687862 bytes (+6%), 230141 → 235814 gzip -9.
 
 ## 5. Telemetry action names ↔ `game-keybinds` (sc-telemetry): no change needed
 

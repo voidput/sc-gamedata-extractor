@@ -14,6 +14,9 @@
 //! `totals` sums the loadout into the figures a patch is most likely to move: stock DPS,
 //! shield pool, power output, fuel, cargo and thrust.
 //!
+//! `capabilities` flags what the stock loadout and role let a vehicle do (mine, salvage,
+//! refuel, ...), by sc-telemetry's `derive_caps` rules (`sctelemetry/shipcaps.py`).
+//!
 //! Hull health on `SHealthComponentParams` reads 1.0 (normalised; the real figure is in
 //! the vehicle XML, not DataCore), so no hull HP is invented; the normalisation value and
 //! the hull's damage multipliers are surfaced instead. Flight numbers come from the stock
@@ -101,8 +104,79 @@ pub struct Vehicle {
     /// Power pips the ship can route to each item type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power_pools: Option<Map<String, Value>>,
+    pub capabilities: Capabilities,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_template: Option<bool>,
+}
+
+/// What the stock loadout and role let a vehicle do. Keys and rules are sc-telemetry's
+/// `derive_caps`; `cargoKnown: false` marks a vehicle with no cargo data at all (no cargo
+/// grid in the stock loadout, no cargo SCU), where `cargo: false` means unknown, not none.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Capabilities {
+    pub mining: bool,
+    pub salvage: bool,
+    pub refuel: bool,
+    pub tractor: bool,
+    pub guns: bool,
+    pub scan: bool,
+    pub quantum: bool,
+    pub qed: bool,
+    pub emp: bool,
+    pub missiles: bool,
+    pub cargo: bool,
+    /// `totals.cargoScu` to 2 dp when positive, else null.
+    pub cargo_scu: Option<f64>,
+    #[serde(rename = "cargoKnown", skip_serializing_if = "Option::is_none")]
+    pub cargo_known: Option<bool>,
+}
+
+/// `_present`: a bool is itself, a number is > 0, a list or object is non-empty.
+fn present(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|x| x > 0.0),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
+        _ => false,
+    }
+}
+
+/// `derive_caps` over a vehicle's role, stock loadout and totals. `game-salvage` names no
+/// vehicles, so `salvage` rests on the role alone.
+pub fn derive_capabilities(
+    role: Option<&str>,
+    loadout: Option<&Map<String, Value>>,
+    totals: Option<&Map<String, Value>>,
+) -> Capabilities {
+    let role = role.unwrap_or_default().to_lowercase();
+    let slot = |k: &str| loadout.and_then(|l| l.get(k));
+    let has_type = |t: &str| {
+        array(slot("weapons"))
+            .iter()
+            .any(|w| w.get("type").and_then(Value::as_str) == Some(t))
+    };
+    let cargo_scu = totals
+        .and_then(|t| t.get("cargoScu"))
+        .and_then(Value::as_f64)
+        .filter(|x| *x > 0.0)
+        .map(round2);
+    let cargo = cargo_scu.is_some() || present(slot("cargoGrids"));
+    Capabilities {
+        mining: has_type("WeaponMining") || role.contains("mining"),
+        salvage: role.contains("salvage"),
+        refuel: role.contains("refuel"),
+        tractor: has_type("TractorBeam"),
+        guns: has_type("WeaponGun") || present(slot("turrets")),
+        scan: present(slot("radars")),
+        quantum: present(slot("quantumDrives")),
+        qed: present(slot("quantumEnforcement")),
+        emp: has_type("EMP"),
+        missiles: present(slot("missileRacks")),
+        cargo,
+        cargo_scu,
+        cargo_known: (!cargo).then_some(false),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -701,6 +775,12 @@ pub fn parse_vehicle(
             value.map(str::to_string)
         }
     };
+    let role = classify(role, "vehicleRole");
+    let capabilities = derive_capabilities(
+        role.as_deref(),
+        resolved.loadout.as_ref(),
+        resolved.totals.as_ref(),
+    );
 
     Some(Vehicle {
         name: if placeholder {
@@ -721,7 +801,7 @@ pub fn parse_vehicle(
         manufacturer: referenced_name(params.get("manufacturer")).map(str::to_string),
         movement_class: str_(params.get("movementClass")).map(str::to_string),
         career: classify(career, "vehicleCareer"),
-        role: classify(role, "vehicleRole"),
+        role,
         crew_size: num(params.get("crewSize")),
         size: num(attach_def(record).get("Size")),
         is_gravlev: (params.get("isGravlevVehicle") == Some(&Value::Bool(true))).then_some(true),
@@ -735,6 +815,7 @@ pub fn parse_vehicle(
         flight: resolved.flight,
         armor: resolved.armor,
         power_pools: parse_power_pools(record),
+        capabilities,
         is_template: placeholder.then_some(true),
     })
 }
@@ -1142,5 +1223,45 @@ mod tests {
         assert_eq!(tidy_classifier(Some("Plain")).as_deref(), Some("Plain"));
         assert_eq!(tidy_classifier(Some("@")), None);
         assert_eq!(tidy_classifier(None), None);
+    }
+
+    #[test]
+    fn capabilities_follow_derive_caps() {
+        let loadout = json!({"weapons": [{"type": "WeaponMining"}, {"type": "TractorBeam"}],
+            "radars": [{"item": "r"}], "quantumDrives": [], "turrets": 2, "missileRacks": 0,
+            "cargoGrids": [{"item": "g"}]});
+        let totals = json!({"cargoScu": 32.456});
+        let caps = derive_capabilities(
+            Some("Light Salvage / Mining"),
+            loadout.as_object(),
+            totals.as_object(),
+        );
+        assert_eq!(
+            serde_json::to_value(&caps).unwrap(),
+            json!({"mining": true, "salvage": true, "refuel": false, "tractor": true, "guns": true,
+                "scan": true, "quantum": false, "qed": false, "emp": false, "missiles": false,
+                "cargo": true, "cargo_scu": 32.46})
+        );
+        let none = serde_json::to_value(derive_capabilities(Some("Heavy Refueling"), None, None))
+            .unwrap();
+        assert_eq!(none["refuel"], json!(true));
+        assert_eq!(none["cargo_scu"], Value::Null);
+        assert_eq!(none["cargoKnown"], json!(false));
+        // A grid without SCU still has cargo, of unknown size.
+        let grid = json!({"cargoGrids": [{"item": "g"}]});
+        let caps = derive_capabilities(None, grid.as_object(), None);
+        assert!(caps.cargo && caps.cargo_scu.is_none() && caps.cargo_known.is_none());
+    }
+
+    #[test]
+    fn vehicle_capabilities_from_its_loadout() {
+        let set = records();
+        let loc = localization();
+        let entities = index_entities(&set);
+        let ctx = build_vehicle_context(&set, &loc, &entities);
+        let v = parse_vehicle(&gladius(), &loc, Some(&ctx)).unwrap();
+        let caps = &v.capabilities;
+        assert!(caps.guns && caps.missiles && !caps.mining && !caps.cargo);
+        assert_eq!(caps.cargo_known, Some(false));
     }
 }
