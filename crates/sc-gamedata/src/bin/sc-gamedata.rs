@@ -1282,6 +1282,8 @@ const TS_ORDER: &[&str] = &[
     "game-law",
     "game-consumables",
     "game-fire",
+    "game-keybinds",
+    "game-attributes",
 ];
 
 /// Every registered domain, in `pipeline.ts` order (any the order misses go last).
@@ -1321,7 +1323,13 @@ fn list_domains() -> Result<ExitCode, String> {
     println!("From game files (needs a Star Citizen install):");
     for d in all_domains() {
         println!("  {}\n      {}", d.name(), d.description());
-        println!("      records: {}", d.filters().join(", "));
+        // A domain built only from archive files has no record filters (`cli.ts`).
+        if !d.filters().is_empty() {
+            println!("      records: {}", d.filters().join(", "));
+        }
+        if d.filters().is_empty() && !d.files().is_empty() {
+            println!("      files:   {}", d.files().join(", "));
+        }
     }
     println!("\nFrom APIs (needs network access):");
     for d in &uex_market::API_DOMAINS {

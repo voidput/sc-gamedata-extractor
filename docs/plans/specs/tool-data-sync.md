@@ -186,8 +186,12 @@ use, and 310 GB on `local-path`. See [ideas](../later/ideas.md).
      `data:`.
    - Test after merge: LIVE committed data is already 4.10.201.48085, so test on that tag once it
      is published, or on a PTU tag. 4.10.200 hits the no-regress guard.
-5. **Bindscape.** Merge `feat/keybinds-domain` (game-keybinds and game-attributes) and
-   publish.
+5. **Bindscape.** Merge `feat/rust-keybinds` (game-keybinds and game-attributes; it replaces
+   the TypeScript `feat/keybinds-domain`) and publish.
+   - The Rust port (`domains/keybinds.rs`, `attributes.rs`, `src/xml.rs`) is byte-identical to
+     the TypeScript on LIVE 4.10.201.48085 (ignoring `_extracted`). The scsticks importers
+     produce the same `actions.json` and `attributes.json` from it, and publish redaction leaves
+     both files unchanged.
    - 2026-11-25: `data-sync.yml` and `pages.yml` are committed in scsticks as `1ff6d16`, not
      pushed. `main` is unprotected and npm test passes (180).
    - The guard reads `_build`, which the import scripts copy from the dataset.

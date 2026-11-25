@@ -78,8 +78,12 @@ pub const GOLDEN_EXTRACTION_FILTERS: &[&str] = &[
 ];
 
 /// Indices (into `source.metas()`) of the records a domain with `filters` is handed, in
-/// `sc-gamedata` load order.
+/// `sc-gamedata` load order. An empty filter list means no records, not all of them (a
+/// domain built only from archive files, `game-keybinds`).
 pub fn scope(source: &dyn RecordSource, filters: &[&str]) -> Vec<usize> {
+    if filters.is_empty() {
+        return Vec::new();
+    }
     let extracted: Vec<Glob> = GOLDEN_EXTRACTION_FILTERS
         .iter()
         .map(|g| Glob::case_sensitive(g))
@@ -162,7 +166,7 @@ impl Dataset {
 pub fn run(domain: &dyn Domain, game: &Game<'_>, extracted: &str) -> Result<Dataset, DomainError> {
     let indices = scope(game.records, domain.filters());
     let (set, mut warnings) = load_pruned(game.records, &indices, &|r| domain.prune(r));
-    if set.is_empty() {
+    if set.is_empty() && !domain.filters().is_empty() {
         warnings.push(format!(
             "{}: none of the loaded records match its filters ({}).",
             domain.name(),
@@ -256,6 +260,8 @@ mod tests {
         // `**/entities/monitoredzone` matches the path without `.xml` only, so it never
         // selected anything at extraction time.
         assert!(names(&["**/entities/monitoredzone"]).is_empty());
+        // No filters: no records (archive-file domains), not every extracted one.
+        assert!(names(&[]).is_empty());
     }
 
     #[test]

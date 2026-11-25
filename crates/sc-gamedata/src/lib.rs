@@ -11,7 +11,8 @@
 //!   supplied by the caller), installed packs, loading a pack from disk;
 //! - [`search_index`] (`search-index.ts`): `game-search-index.json`, derived from the
 //!   item-tags and ships datasets;
-//! - [`cryxml`] (`cryxml.ts`): CryXmlB documents in raw archive files;
+//! - [`cryxml`] (`cryxml.ts`): CryXmlB documents in raw archive files; [`xml`] (`xml.ts`):
+//!   text XML, and either form of an archive config file;
 //! - [`glob`] (`glob.ts`), [`collate`] (`Intl.Collator`/`localeCompare` orders);
 //! - [`output`]: `JSON.stringify(_, null, 2)`-exact writing and the dataset header;
 //! - [`domain`] + [`domains`]: the `Domain` trait and the registry;
@@ -44,6 +45,7 @@ pub mod records;
 pub mod search_index;
 pub mod source;
 pub mod strings;
+pub mod xml;
 
 // For the `sc-gamedata` CLI: the fzf picker (`finder.ts`), the UEX client (`sources/uex.ts`)
 // and the UEX datasets (`domains/uex-market.ts`); `deflect` (`deflection.ts`) and `engage`

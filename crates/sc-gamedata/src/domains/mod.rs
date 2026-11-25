@@ -36,6 +36,8 @@ registry! {
 
     armor, // armor.ts
 
+    attributes, // attributes.ts (feat/keybinds-domain; archive file, no records)
+
     blueprints, // blueprints.ts
 
     cargo, // cargo.ts
@@ -55,6 +57,8 @@ registry! {
     item_sources, // item-sources.ts
 
     item_tags, // item-tags.ts
+
+    keybinds, // keybinds.ts (feat/keybinds-domain; archive file, no records)
 
     law, // law.ts
 
