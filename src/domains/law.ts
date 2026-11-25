@@ -15,7 +15,7 @@
  * dropped here so only real values remain.
  */
 
-import { isUnresolved, localize, type Localization } from "../localization.js";
+import { localize, type Localization } from "../localization.js";
 import { compareNames, num, refPath, refShortName, str, type GameRecord } from "../records.js";
 import type { Domain } from "./types.js";
 
@@ -30,14 +30,6 @@ export function setParameters(value: unknown): Record<string, number | boolean> 
     out[key] = key === "isFelony" || key.startsWith("ignore") || key.startsWith("hide") ? n === 1 : n;
   }
   return Object.keys(out).length > 0 ? out : undefined;
-}
-
-/** Some name keys exist only with a `,P` suffix in the string table. */
-function localizeName(localization: Localization, key: unknown): string | undefined {
-  const name = localize(localization, key);
-  if (!isUnresolved(name) || typeof key !== "string") return name;
-  const suffixed = localize(localization, `${key},P`);
-  return isUnresolved(suffixed) ? name : suffixed;
 }
 
 /** Last path segment of a reference, the crime or commodity's file name. */
@@ -59,7 +51,7 @@ export function parseCrime(record: GameRecord, localization: Localization = new 
   return {
     name: record.shortName,
     recordName: record.name,
-    displayName: localizeName(localization, v.name),
+    displayName: localize(localization, v.name),
     category: segments[segments.indexOf("infractiondefinitions") + 1] ?? "",
     triggers: Array.isArray(v.triggers) ? v.triggers.filter((t): t is string => typeof t === "string") : [],
     parameters: setParameters(v.defaultParameters),
@@ -103,7 +95,7 @@ export function parseJurisdiction(
   return {
     name: record.shortName,
     recordName: record.name,
-    displayName: localizeName(localization, v.name),
+    displayName: localize(localization, v.name),
     parent: fileOf(v.parentJurisdiction),
     respectsParentLaws: typeof v.respectsParentJurisdictionLaws === "boolean" ? v.respectsParentJurisdictionLaws : undefined,
     isPrison: typeof v.isPrison === "boolean" ? v.isPrison : undefined,
@@ -120,7 +112,7 @@ export function parseJurisdiction(
       maxPossessionScu: num(c.maxPossessionSCU),
     })),
     impounding: list(v.impoundingDefinitions).map((d) => ({
-      name: localizeName(localization, d.name),
+      name: localize(localization, d.name),
       trigger: str(d.trigger),
       seconds: num(d.impoundingTimeSeconds),
       fine: num(d.impoundingFineUEC),

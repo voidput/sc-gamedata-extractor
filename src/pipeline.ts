@@ -15,7 +15,10 @@ import { blueprintsDomain } from "./domains/blueprints.js";
 import { cargoDomain } from "./domains/cargo.js";
 import { commoditiesDomain } from "./domains/commodities.js";
 import { containersDomain } from "./domains/containers.js";
+import { fireDomain } from "./domains/fire.js";
 import { fpsWeaponsDomain } from "./domains/fps-weapons.js";
+import { itemSourcesDomain } from "./domains/item-sources.js";
+import { itemTagsDomain } from "./domains/item-tags.js";
 import { lawDomain } from "./domains/law.js";
 import { lootDomain } from "./domains/loot.js";
 import { componentsDomain } from "./domains/components.js";
@@ -71,8 +74,11 @@ export const DOMAINS: Domain[] = [
   quantumDomain,
   armorDomain,
   lootDomain,
+  itemTagsDomain,
+  itemSourcesDomain,
   lawDomain,
   consumablesDomain,
+  fireDomain,
 ];
 
 /** Datasets fetched from APIs. No game install or StarBreaker needed. */

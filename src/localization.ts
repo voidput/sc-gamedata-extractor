@@ -195,9 +195,12 @@ export function localize(table: Localization, value: unknown): string | undefine
   const hit = table.get(key) ?? table.get(value);
   if (hit !== undefined) return hit.length > 0 ? hit : undefined;
 
-  const lower = key.toLowerCase();
-  for (const [candidate, text] of table) {
-    if (candidate.toLowerCase() === lower) return text.length > 0 ? text : undefined;
+  // Any case, then the `,P` form some keys exist only in (the game resolves
+  // `@item_NameX` to `item_NameX,P`).
+  const found = tableKey(table, key);
+  if (found !== undefined) {
+    const text = table.get(found) as string;
+    return text.length > 0 ? text : undefined;
   }
 
   // Unresolved: hand back the token so the caller can see what is missing.
@@ -220,6 +223,7 @@ export function isUnresolved(value: string | undefined): boolean {
  *   "<= PLACEHOLDER =>"  the marker CIG uses in item records
  *   "< = TEST NAME = >"  the same marker, spaced, used in mission records
  *   ""                   simply unset
+ *   "PH - shoes_01"      a "PH -" prefix on unfinished items (seen once `,P` keys resolve)
  *
  * Matching on "<=" alone lets the spaced variant through, so the angle brackets
  * are checked with the interior whitespace removed.
@@ -229,10 +233,96 @@ export function isPlaceholderName(name: string | undefined): boolean {
   if (name.startsWith("@")) return true;
 
   const lower = name.toLowerCase();
-  if (lower.includes("placeholder")) return true;
+  if (lower.includes("placeholder") || /^ph\s*-/.test(lower)) return true;
 
   const squashed = lower.replace(/\s+/g, "");
   return squashed.includes("<=") || squashed.includes("=>") || squashed.includes("testname");
 }
 
 export { findJsonFiles };
+
+/**
+ * What a record's name reference resolves to, for consumers that need to tell a
+ * real name from a gap. Domains swap placeholders for the class name, so the
+ * `name` field alone never says whether the game has a name for the record.
+ *
+ *   real         resolves to a usable name
+ *   placeholder  resolves, or is literal text, but is a placeholder marker
+ *   unresolved   an `@` key the table has no entry for, even with `,P`
+ *   empty        unset, `@LOC_EMPTY`, `@LOC_UNINITIALIZED`, or a blank value
+ */
+export type NameStatus = "real" | "placeholder" | "unresolved" | "empty";
+
+const EMPTY_KEYS = new Set(["", "loc_empty", "loc_uninitialized"]);
+
+const lowerIndexes = new WeakMap<Localization, Map<string, string>>();
+
+/** Lower-case key -> first key with that form, built once per table. */
+function lowerIndex(table: Localization): Map<string, string> {
+  let index = lowerIndexes.get(table);
+  if (!index) {
+    index = new Map();
+    for (const key of table.keys()) {
+      const lower = key.toLowerCase();
+      if (!index.has(lower)) index.set(lower, key);
+    }
+    lowerIndexes.set(table, index);
+  }
+  return index;
+}
+
+/** The table's own spelling of a bare key: exact, then any case, then the same with `,P`. */
+function tableKey(table: Localization, bare: string): string | undefined {
+  if (table.has(bare)) return bare;
+  const index = lowerIndex(table);
+  const lower = bare.toLowerCase();
+  return index.get(lower) ?? (table.has(`${bare},P`) ? `${bare},P` : index.get(`${lower},p`));
+}
+
+/**
+ * The string-table key a field references, without its `@`, spelled as the
+ * table spells it (including a `,P` suffix the reference leaves off). An
+ * unresolved key is returned as referenced, so the gap stays visible. Literal
+ * text, unset values and the empty markers give undefined.
+ */
+export function locKey(table: Localization, value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.startsWith("@")) return undefined;
+  const bare = value.slice(1);
+  if (EMPTY_KEYS.has(bare.toLowerCase())) return undefined;
+  return tableKey(table, bare) ?? bare;
+}
+
+/** Classify a name reference; see NameStatus. */
+export function nameStatusOf(table: Localization, value: unknown): NameStatus {
+  if (typeof value !== "string" || value.length === 0) return "empty";
+  if (!value.startsWith("@")) return isPlaceholderName(value) ? "placeholder" : "real";
+  const bare = value.slice(1);
+  if (EMPTY_KEYS.has(bare.toLowerCase())) return "empty";
+  const key = tableKey(table, bare);
+  if (key === undefined) return "unresolved";
+  const text = (table.get(key) as string).trim();
+  if (text.length === 0) return "empty";
+  return isPlaceholderName(text) ? "placeholder" : "real";
+}
+
+export interface LocRefs {
+  nameKey?: string;
+  descriptionKey?: string;
+  /** Absent when the name is real, the common case, to keep dumps small. */
+  nameStatus?: NameStatus;
+}
+
+/** A NameStatus as a dataset field: omitted when "real". */
+export function nameStatusField(table: Localization, value: unknown): NameStatus | undefined {
+  const status = nameStatusOf(table, value);
+  return status === "real" ? undefined : status;
+}
+
+/** Key refs for a record's name and description references. */
+export function locRefs(table: Localization, name: unknown, description?: unknown): LocRefs {
+  return {
+    nameKey: locKey(table, name),
+    descriptionKey: locKey(table, description),
+    nameStatus: nameStatusField(table, name),
+  };
+}

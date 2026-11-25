@@ -24,24 +24,16 @@
  * (Stileron 950-998 shows as 972).
  */
 
-import { isPlaceholderName, isUnresolved, localize, type Localization } from "../localization.js";
+import { isPlaceholderName, localize, locKey, locRefs, nameStatusField, type Localization, type NameStatus } from "../localization.js";
 import { at, compareNames, indexByRecordPath, num, refPath, refShortName, str, type GameRecord } from "../records.js";
 import type { Domain } from "./types.js";
-
-/** Localize, retrying with the `,P` suffix some keys carry only in that form. */
-function localizeKey(localization: Localization, value: unknown): string | undefined {
-  const text = localize(localization, value);
-  if (!isUnresolved(text) || typeof value !== "string") return text;
-  const suffixed = localize(localization, `${value},P`);
-  return isUnresolved(suffixed) ? text : suffixed;
-}
 
 /**
  * A localized name, or undefined for placeholders and unresolved keys. UI markup
  * is stripped: carbon dioxide is `CO<font size="%d">2</font>` in the table.
  */
 export function displayNameOf(localization: Localization, value: unknown): string | undefined {
-  const name = localizeKey(localization, value)?.replace(/<[^>]*>/g, "").trim();
+  const name = localize(localization, value)?.replace(/<[^>]*>/g, "").trim();
   return isPlaceholderName(name) ? undefined : name;
 }
 
@@ -50,7 +42,7 @@ export function displayNameOf(localization: Localization, value: unknown): strin
  * into line breaks, placeholders and "<Name> description." stubs dropped.
  */
 export function descriptionOf(localization: Localization, value: unknown): string | undefined {
-  const text = localizeKey(localization, value)
+  const text = localize(localization, value)
     ?.replace(/<[^>]*>/g, "")
     .replace(/\\n/g, "\n")
     .trim();
@@ -64,6 +56,11 @@ export interface ResourceType {
   id: string;
   displayName?: string;
   description?: string;
+  /** String-table keys, as the table spells them; `nameStatus` (absent when real) flags a missing name. */
+  nameKey?: string;
+  descriptionKey?: string;
+  /** Absent when the name is real. */
+  nameStatus?: NameStatus;
   /** Top-level group, e.g. "Metal". */
   group: string;
   /** Nested group path below the top level, e.g. ["UnrefinedOres"]. */
@@ -73,6 +70,82 @@ export interface ResourceType {
   refinesTo?: string;
   volatility?: { volatility?: number; healthDecayPerSecond?: number };
   quality?: ResourceQuality;
+  // Derived across the dataset (resourceLinks), so consumers need not recompute them.
+  /** The top group, readable: "UnrefinedOres" -> "Unrefined Ores". */
+  groupLabel?: string;
+  /** The subgroups, readable and joined: "Unrefined Ores > Gems". */
+  subgroupLabel?: string;
+  /** False for the placeholder groups (HeatPlaceholder, PowerPlaceholder): ship systems, not trade. */
+  tradable?: boolean;
+  /** A raw form: it refines into something (`refinesTo`). */
+  raw?: boolean;
+  /** Resources that refine into this one, by exact name. */
+  rawSources?: string[];
+  /** Volatile cargo: volatility above zero (it decays and can explode). */
+  volatile?: true;
+  /** Density is 1.0, the engine default, not a measurement. */
+  densityIsDefault?: true;
+  /** Cargo items holding it. */
+  cargo?: { className: string; kind?: string; capacityScu?: number }[];
+}
+
+/** `UnrefinedOres` -> `Unrefined Ores`, `Raw_Minerals` -> `Raw Minerals`. */
+export function groupLabel(key: string): string {
+  let out = "";
+  let prev: string | undefined;
+  for (const c of key) {
+    if (c === "_") {
+      if (out.length > 0 && !out.endsWith(" ")) out += " ";
+    } else {
+      if (/\p{Lu}/u.test(c) && prev !== undefined && /\p{Ll}/u.test(prev)) out += " ";
+      out += c;
+    }
+    prev = c;
+  }
+  return out.trim();
+}
+
+/** The cross-record fields of each resource: labels, raw links, cargo items. */
+export function resourceLinks(resources: ResourceType[], items: CommodityItem[]): ResourceType[] {
+  const lower = (s: string) => s.toLowerCase();
+  return resources.map((r) => {
+    const rawSources = resources
+      .filter((x) => x.refinesTo !== undefined && lower(x.refinesTo) === lower(r.name))
+      .map((x) => x.name)
+      .sort(compareNames);
+    const cargo = items
+      .filter((i) => i.resource !== undefined && lower(i.resource) === lower(r.name))
+      .map((i) => ({ className: i.name, kind: i.type, capacityScu: i.capacityScu }))
+      .sort((a, b) => compareNames(a.className, b.className));
+    const subgroupLabel = r.subgroups.map(groupLabel).join(" > ");
+    return {
+      ...r,
+      groupLabel: groupLabel(r.group) || undefined,
+      subgroupLabel: subgroupLabel || undefined,
+      tradable: !lower(r.group).endsWith("placeholder"),
+      raw: r.refinesTo !== undefined,
+      rawSources: rawSources.length > 0 ? rawSources : undefined,
+      volatile: (r.volatility?.volatility ?? 0) > 0 || undefined,
+      densityIsDefault: r.densityGramsPerCc === 1 || undefined,
+      cargo: cargo.length > 0 ? cargo : undefined,
+      quality: withSteps(r.quality),
+    };
+  });
+}
+
+/** Damage configurations with identical settings, as one row listing every config. */
+export function damageGroups(damage: CommodityDamage[]): (Omit<CommodityDamage, "name" | "recordName"> & { configs: string[] })[] {
+  const groups = new Map<string, Omit<CommodityDamage, "name" | "recordName"> & { configs: string[] }>();
+  for (const d of damage) {
+    const settings: Partial<CommodityDamage> = { ...d };
+    delete settings.name;
+    delete settings.recordName;
+    const key = JSON.stringify(settings);
+    const group = groups.get(key);
+    if (group) group.configs.push(d.name);
+    else groups.set(key, { configs: [d.name], ...settings });
+  }
+  return [...groups.values()];
 }
 
 export interface QualityDistribution {
@@ -89,9 +162,77 @@ export interface ResourceQuality {
   tier?: string;
   distribution?: QualityDistribution;
   /** The same curve, replaced at these locations. */
-  locationOverrides?: (QualityDistribution & { location: string })[];
+  locationOverrides?: (QualityDistribution & { location: string; steps?: QualityStep[] })[];
   /** A rolled quality in [start, end] shows as `value`. */
   bands?: { start?: number; end?: number; value?: number }[];
+  /** The bands a roll on `distribution` can reach, clipped to its min-max. */
+  steps?: QualityStep[];
+}
+
+/** A shown value: every roll in start..end (clipped to the curve's min-max) shows as `shown`. */
+export interface QualityStep {
+  start: number;
+  end: number;
+  shown: number;
+  /** Estimated share of rolls, 0-1; absent without a spread. See `_assumptions`. */
+  shareEstimate?: number;
+}
+
+/** What `shareEstimate` rests on; the records give the curve's numbers, not how the game samples it. */
+export const QUALITY_ASSUMPTIONS =
+  "quality steps[].shareEstimate assumes rolls are integers drawn from a normal curve (mean, stddev) truncated to min-max; a band covers start-0.5 to end+0.5.";
+
+/** Abramowitz-Stegun 7.1.26, error below 1.5e-7; the same formula the app uses. */
+function erf(x: number): number {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y =
+    1 -
+    ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) *
+      t *
+      Math.exp(-x * x);
+  return x < 0 ? -y : y;
+}
+
+const phi = (x: number, mean: number, sd: number) => 0.5 * (1 + erf((x - mean) / (sd * Math.SQRT2)));
+
+/** Rounded so float noise cannot differ between implementations. */
+const share = (n: number) => Math.round(n * 1e8) / 1e8;
+
+/** The steps a roll on `curve` reaches: bands clipped to min-max (0-1000 when unset), lowest first. */
+export function qualitySteps(bands: ResourceQuality["bands"], curve: QualityDistribution | undefined): QualityStep[] | undefined {
+  if (!bands || bands.length === 0) return undefined;
+  const lo = curve?.min ?? 0;
+  const hi = curve?.max ?? 1000;
+  const { mean, stddev } = curve ?? {};
+  const mass = (a: number, b: number) =>
+    mean !== undefined && stddev !== undefined && stddev > 0 ? phi(b + 0.5, mean, stddev) - phi(a - 0.5, mean, stddev) : undefined;
+  const total = mass(lo, hi);
+  const steps: QualityStep[] = [];
+  for (const band of bands) {
+    if (band.start === undefined || band.end === undefined || band.value === undefined) continue;
+    const start = Math.max(band.start, lo);
+    const end = Math.min(band.end, hi);
+    if (start > end) continue;
+    const m = mass(start, end);
+    steps.push({
+      start,
+      end,
+      shown: band.value,
+      shareEstimate: total !== undefined && total > 0 && m !== undefined ? share(m / total) : undefined,
+    });
+  }
+  steps.sort((a, b) => a.start - b.start);
+  return steps.length > 0 ? steps : undefined;
+}
+
+/** A quality block with steps for its own curve and each location's. */
+export function withSteps(quality: ResourceQuality | undefined): ResourceQuality | undefined {
+  if (!quality) return undefined;
+  return {
+    ...quality,
+    locationOverrides: quality.locationOverrides?.map((o) => ({ ...o, steps: qualitySteps(quality.bands, o) })),
+    steps: qualitySteps(quality.bands, quality.distribution),
+  };
 }
 
 function distributionOf(value: unknown): QualityDistribution | undefined {
@@ -168,6 +309,7 @@ function parseResource(
     id: str(raw._RecordId_) ?? "",
     displayName: displayNameOf(localization, raw.displayName),
     description: descriptionOf(localization, raw.description),
+    ...locRefs(localization, raw.displayName, raw.description),
     group: groups[0] ?? "",
     subgroups: groups.slice(1),
     densityGramsPerCc: num(at(raw, "densityType.densityUnit.gramsPerCubicCentimeter")),
@@ -212,6 +354,11 @@ export interface CommodityItem {
   type?: string;
   /** The resource's description; the cargo items carry none of their own. */
   description?: string;
+  nameKey?: string;
+  /** The resource's description key, as with `description`. */
+  descriptionKey?: string;
+  /** Absent when the name is real. */
+  nameStatus?: NameStatus;
   /** Folder under entities/commodities, e.g. "halogens". */
   category: string;
   resource?: string;
@@ -243,6 +390,8 @@ export function parseCommodityItem(
     recordName: record.name,
     id: record.id,
     displayName: displayNameOf(localization, purchasable?.displayName),
+    nameKey: locKey(localization, purchasable?.displayName),
+    nameStatus: nameStatusField(localization, purchasable?.displayName),
     type: displayNameOf(localization, purchasable?.displayType),
     category: folder >= 0 && segments.length > folder + 2 ? segments[folder + 1] : "",
     resource: refShortName(composition[0]?.entry),
@@ -312,8 +461,10 @@ export const commoditiesDomain: Domain = {
       .filter((r) => r.recordPath.includes("/entities/commodities/"))
       .map((r) => parseCommodityItem(r, localization))
       .map((item) => {
-        const description = resources.find((r) => r.name === item.resource)?.description;
-        return description ? { ...item, description } : item;
+        // A resource owns its description key; the cargo items share it.
+        const resource = resources.find((r) => r.name === item.resource);
+        const { description, descriptionKey } = resource ?? {};
+        return description || descriptionKey ? { ...item, description, descriptionKey } : item;
       })
       .sort((a, b) => compareNames(a.displayName ?? a.name, b.displayName ?? b.name));
     const damage = records
@@ -324,10 +475,15 @@ export const commoditiesDomain: Domain = {
     const byGroup: Record<string, string[]> = {};
     for (const r of resources) (byGroup[r.group] ??= []).push(r.name);
 
+    const linked = resourceLinks(resources, items);
     return {
-      resources,
+      _assumptions: linked.some((r) => r.quality?.steps?.some((s) => s.shareEstimate !== undefined))
+        ? [QUALITY_ASSUMPTIONS]
+        : undefined,
+      resources: linked,
       items,
       damage,
+      damageGroups: damageGroups(damage),
       byGroup,
       summary: { resources: resources.length, items: items.length, damage: damage.length },
     };

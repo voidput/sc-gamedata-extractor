@@ -13,13 +13,18 @@
  */
 
 import { component, referencedName } from "../entity.js";
-import { isPlaceholderName, localize, type Localization } from "../localization.js";
+import { isPlaceholderName, localize, locRefs, type Localization, type NameStatus } from "../localization.js";
 import { at, num, str, type GameRecord } from "../records.js";
 
 export interface ItemIdentity {
   name: string;
   /** True when the record has no real display name, i.e. a template or stub. */
   isTemplate?: true;
+  /** String-table key of the name, as the table spells it. */
+  nameKey?: string;
+  descriptionKey?: string;
+  /** Absent when the name is real. */
+  nameStatus?: NameStatus;
   type?: string;
   subType?: string;
   size?: number;
@@ -44,6 +49,7 @@ export function itemIdentity(record: GameRecord, localization: Localization): It
   return {
     name: placeholder ? record.shortName : (localized as string),
     isTemplate: placeholder || undefined,
+    ...locRefs(localization, at(def, "Localization.Name"), at(def, "Localization.Description")),
     type: str(def.Type),
     subType: str(def.SubType) === "UNDEFINED" ? undefined : str(def.SubType),
     size: num(def.Size),

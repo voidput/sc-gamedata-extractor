@@ -15,7 +15,7 @@
  * returns roughly ten times too many rows, mostly duplicate names.
  */
 
-import { localize } from "../localization.js";
+import { localize, locRefs, type NameStatus } from "../localization.js";
 import { str, type GameRecord } from "../records.js";
 import type { Domain, ParseContext } from "./types.js";
 
@@ -26,6 +26,11 @@ export interface Manufacturer {
   id: string;
   name?: string;
   description?: string;
+  /** String-table keys, as the table spells them; `nameStatus` (absent when real) flags a missing name. */
+  nameKey?: string;
+  descriptionKey?: string;
+  /** Absent when the name is real. */
+  nameStatus?: NameStatus;
 }
 
 export function parseManufacturer(
@@ -39,6 +44,7 @@ export function parseManufacturer(
     id: record.id,
     name: localize(localization, loc?.Name),
     description: localize(localization, loc?.Description),
+    ...locRefs(localization, loc?.Name, loc?.Description),
   };
 }
 

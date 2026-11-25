@@ -540,6 +540,43 @@ const bundle = {
 fs.writeFileSync(path.join(outDir, "combat.json"), JSON.stringify(bundle));
 written.push({ name: "combat.json", rows: bundle.weapons.length, columns: 0, json: true });
 
+// ---------- fire ----------
+
+const fireFile = path.join(dataDir, "game-fire.json");
+const fire = fs.existsSync(fireFile) ? load("game-fire.json") : undefined;
+if (fire) {
+  const mult = (t) => (i) => i.damageMultipliers?.[t];
+  const ig = (i) => i.ignite?.[0];
+  written.push(
+    writeCsv("fire_components", [
+      ["name", (i) => i.name],
+      ["record", (i) => shortRecord(i.recordName)],
+      ["type", (i) => i.type],
+      ["manufacturer", (i) => i.manufacturer],
+      ["size", (i) => i.size],
+      ["grade", (i) => i.grade],
+      ["health", (i) => i.health],
+      ["mult_physical", mult("physical")],
+      ["mult_energy", mult("energy")],
+      ["mult_thermal", mult("thermal")],
+      ["ignite_state", (i) => ig(i)?.state],
+      ["ignite_below_health", (i) => ig(i)?.belowHealthRatio],
+      ["ignite_chance", (i) => ig(i)?.chance],
+      ["ignite_radius_m", (i) => ig(i)?.radius],
+      ["death_thermal", (i) => i.deathExplosion?.damage.thermal],
+      ["death_damage_total", (i) => sum(i.deathExplosion?.damage)],
+      ["death_radius_max_m", (i) => i.deathExplosion?.maxRadius],
+      ["misfire_fire_top_level", (i) => (i.misfire ? Math.max(0, ...i.misfire.fireByLevel) : undefined)],
+      ["misfire_temp_k", (i) => i.misfireTemperature?.min],
+      ["overheat_k", (i) => i.overheat?.at],
+      ["cooled_temp_k", (i) => i.temperature?.minCoolingTemperature],
+      ["heat_gen_k_s", (i) => i.temperature?.heatGen],
+      ["equalization_rate", (i) => i.temperature?.coolingEqualizationRate],
+      ["equalization_diff_k", (i) => i.temperature?.temperatureDifference],
+    ], named(fire.items)),
+  );
+}
+
 // ---------- readme ----------
 
 const notes = `Star Citizen combat data export, build ${build}
@@ -561,6 +598,12 @@ Every value is read from the game's DataCore records. Derived columns:
   turrets reuse player gun names) and across cosmetic copies. Match on record,
   or key (name plus size). variant_of names the original a copy duplicates.
 - deflection_matrix: every distinct gun against every player ship.
+- fire_components: ship items that can start a fire (game-fire). ignite_chance
+  is the roll when health drops below ignite_below_health; death_thermal is
+  the death explosion's thermal damage, the only explosion damage that
+  ignites (rule multiplier 0.25); misfire_fire_top_level is the share of
+  top-level misfires that are fires. Temperatures in kelvin; a burning room
+  is 900 K. Bullets and collisions never ignite.
 - weapon_penetration: how deep a round travels into a hull
   (penetration_depth_m) and the cone it does it in; pierce columns are the
   thickest geometry it crosses and the damage kept at each level.

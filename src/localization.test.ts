@@ -2,7 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   isUnresolved,
   localize,
+  locKey,
+  locRefs,
+  nameStatusField,
   lookupString,
+  nameStatusOf,
   parseGlobalIni,
   searchStrings,
 } from "./localization.js";
@@ -126,5 +130,79 @@ describe("lookupString", () => {
 
   it("returns undefined rather than a token when the key is absent", () => {
     expect(lookupString(table, "Nope")).toBeUndefined();
+  });
+});
+
+describe("locKey / nameStatusOf", () => {
+  const table = parseGlobalIni(
+    [
+      "item_NameReal=Arrowhead",
+      "item_DescReal=A sniper rifle.",
+      "item_NameP,P=Pembroke",
+      "item_NameStub=<= PLACEHOLDER =>",
+      "LOC_PLACEHOLDER=<= PLACEHOLDER =>",
+      "item_NameBlank=",
+      "Item_NameMixed=Mixed",
+    ].join("\r\n"),
+  );
+
+  it("keeps a real key and calls it real", () => {
+    expect(locKey(table, "@item_NameReal")).toBe("item_NameReal");
+    expect(nameStatusOf(table, "@item_NameReal")).toBe("real");
+  });
+
+  it("localize resolves a key that exists only with ,P", () => {
+    expect(localize(table, "@item_NameP")).toBe("Pembroke");
+    expect(localize(table, "@ITEM_NAMEP")).toBe("Pembroke");
+  });
+
+  it("finds a key that exists only with ,P and returns the table's spelling", () => {
+    expect(locKey(table, "@item_NameP")).toBe("item_NameP,P");
+    expect(nameStatusOf(table, "@item_NameP")).toBe("real");
+  });
+
+  it("matches case-insensitively and returns the table's spelling", () => {
+    expect(locKey(table, "@item_namemixed")).toBe("Item_NameMixed");
+  });
+
+  it("flags a placeholder value and the placeholder key", () => {
+    expect(nameStatusOf(table, "@item_NameStub")).toBe("placeholder");
+    expect(nameStatusOf(table, "@LOC_PLACEHOLDER")).toBe("placeholder");
+    expect(locKey(table, "@item_NameStub")).toBe("item_NameStub");
+  });
+
+  it("keeps an unresolved key as referenced", () => {
+    expect(locKey(table, "@item_NameGone")).toBe("item_NameGone");
+    expect(nameStatusOf(table, "@item_NameGone")).toBe("unresolved");
+  });
+
+  it("treats unset values and empty markers as empty, with no key", () => {
+    for (const value of [undefined, "", "@LOC_EMPTY", "@loc_uninitialized", "@"]) {
+      expect(locKey(table, value)).toBeUndefined();
+      expect(nameStatusOf(table, value)).toBe("empty");
+    }
+    expect(nameStatusOf(table, "@item_NameBlank")).toBe("empty");
+  });
+
+  it("gives literal text no key and classifies it by content", () => {
+    expect(locKey(table, "Plain Name")).toBeUndefined();
+    expect(nameStatusOf(table, "Plain Name")).toBe("real");
+    expect(nameStatusOf(table, "< = TEST NAME = >")).toBe("placeholder");
+    expect(nameStatusOf(table, "PH - 987_shoes_01")).toBe("placeholder");
+    expect(nameStatusOf(table, "Phoenix")).toBe("real");
+  });
+
+  it("locRefs bundles name and description keys", () => {
+    expect(locRefs(table, "@item_NameReal", "@item_DescReal")).toEqual({
+      nameKey: "item_NameReal",
+      descriptionKey: "item_DescReal",
+    });
+    expect(locRefs(table, "@item_NameReal").nameStatus).toBeUndefined();
+    expect(locRefs(table, "@item_NameGone").nameStatus).toBe("unresolved");
+  });
+
+  it("nameStatusField omits only real", () => {
+    expect(nameStatusField(table, "@item_NameReal")).toBeUndefined();
+    expect(nameStatusField(table, "@item_NameStub")).toBe("placeholder");
   });
 });

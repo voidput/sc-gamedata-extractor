@@ -11,7 +11,16 @@
  * Every parse also keeps a gzipped copy of its datasets under
  * `snapshots/<build>/`, so each patch the tool has ever parsed is a diff
  * target by build number with no publish step and no git. Resolution order:
- * "local", a directory, a local snapshot, then a dumps-repo tag.
+ * "local", a directory, a local snapshot, then a dumps-repo tag. A snapshot
+ * that lacks a dataset (the string table is written after parse, and older
+ * snapshots predate some domains) falls back to the published tag of the same
+ * build, when the dumps checkout has one.
+ *
+ * Derived files are not datasets: game-search-index.json restates item-tags
+ * and ships as positional rows, so it is never snapshotted, listed or diffed
+ * unless asked for by name. A published string table is redacted to name keys
+ * (scripts/publish-dump.mjs); compared with a full local table, the full side
+ * is cut to the same keys first, so redaction never reads as added strings.
  *
  * Records are matched by `recordName` (or `id`, or `name` as a last resort),
  * never by display name, which the game renames between patches. Field
@@ -23,6 +32,16 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+
+import { SEARCH_INDEX_FILE } from "./query/search-index.js";
+
+/**
+ * Files beside the datasets that are derived from them. They are left out of
+ * snapshots and of the default dataset list, so `diff` and `notes` never
+ * count them (the search index's rows are positional: one new item shifts
+ * every row after it).
+ */
+export const DERIVED_FILES: ReadonlySet<string> = new Set([SEARCH_INDEX_FILE]);
 
 /** Where per-build copies live. Shared by parse (writes) and diff (reads). */
 export function snapshotsDir(root: string): string {
@@ -40,21 +59,37 @@ export interface LocalSnapshot {
  * Copy the datasets stamped with `build` into `<snapshots>/<build>/`, gzipped.
  * A dataset carrying a different `_build` is skipped, so a partial re-parse of
  * one domain never mixes builds inside a snapshot. Re-saving a build replaces
- * only the datasets it writes.
+ * only the datasets it writes. Derived files (DERIVED_FILES) are never kept.
  */
 export function saveSnapshot(dataDir: string, root: string, build: string, files?: string[]): LocalSnapshot {
   const dir = path.join(root, build);
   fs.mkdirSync(dir, { recursive: true });
   const candidates = files ?? fs.readdirSync(dataDir).filter((f) => f.startsWith("game-") && f.endsWith(".json"));
   for (const file of candidates) {
+    if (DERIVED_FILES.has(file)) continue;
     const text = fs.readFileSync(path.join(dataDir, file), "utf-8");
-    const stamp = /"_build":\s*"([^"]+)"/.exec(text.slice(0, 4096))?.[1];
-    if (stamp !== build) continue;
+    if (stampOf(text) !== build) continue;
     fs.writeFileSync(path.join(dir, `${file}.gz`), zlib.gzipSync(text, { level: 6 }));
   }
   const saved = new Date().toISOString();
   fs.writeFileSync(path.join(dir, "_snapshot.json"), JSON.stringify({ build, saved }, null, 2));
   return { build, path: dir, datasets: fs.readdirSync(dir).filter((f) => f.endsWith(".json.gz")).length, saved };
+}
+
+function stampOf(text: string): string | undefined {
+  return /"_build":\s*"([^"]+)"/.exec(text.slice(0, 4096))?.[1];
+}
+
+/**
+ * Snapshot one dataset that was written outside parse (the string table, which
+ * `strings --write` produces after parse has already saved its snapshot). The
+ * build comes from the file's own `_build` stamp; an unstamped file is not
+ * snapshotted, since it cannot be filed under a build.
+ */
+export function snapshotDataset(file: string, root: string): LocalSnapshot | undefined {
+  const build = stampOf(fs.readFileSync(file, "utf-8"));
+  if (!build) return undefined;
+  return saveSnapshot(path.dirname(file), root, build, [path.basename(file)]);
 }
 
 /** Local snapshots, newest build first by version order. */
@@ -94,7 +129,8 @@ export function compareVersions(a: string, b: string): number {
 }
 
 export type BuildSource =
-  | { kind: "dir"; path: string }
+  /** `fallback` serves any dataset the directory lacks (a snapshot's published twin). */
+  | { kind: "dir"; path: string; fallback?: BuildSource }
   | { kind: "tag"; tag: string; repoDir: string };
 
 export interface DumpsRepoOptions {
@@ -164,7 +200,10 @@ export function resolveSource(
   if (options.snapshots) {
     const local = listSnapshots(options.snapshots);
     const hit = local.find((s) => s.build === spec) ?? local.find((s) => s.build.startsWith(spec + "."));
-    if (hit) return { kind: "dir", path: hit.path };
+    if (hit) {
+      const fallback = publishedTag(hit.build, options.repo);
+      return fallback ? { kind: "dir", path: hit.path, fallback } : { kind: "dir", path: hit.path };
+    }
   }
 
   const { repo } = options;
@@ -183,17 +222,33 @@ export function resolveSource(
   return { kind: "tag", tag: spec, repoDir: repo.workDir };
 }
 
+/**
+ * The published tag for exactly this build in the existing checkout, if any.
+ * Never fetches: a snapshot is a local diff target and should stay one.
+ */
+function publishedTag(build: string, repo: DumpsRepoOptions): BuildSource | undefined {
+  try {
+    return listPublishedBuilds(repo).some((b) => b.version === build)
+      ? { kind: "tag", tag: build, repoDir: repo.workDir }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function describeSource(source: BuildSource): string {
   return source.kind === "dir" ? source.path : `tag ${source.tag}`;
 }
 
 export interface Snapshot {
+  /** Where the file was actually read from; differs from the source on a fallback. */
+  source: string;
   build?: string;
   extracted?: string;
   body: Record<string, unknown>;
 }
 
-const META_KEYS = new Set(["_source", "_extracted", "_build", "_redacted", "summary"]);
+const META_KEYS = new Set(["_source", "_extracted", "_build", "_redacted", "_assumptions", "summary"]);
 
 /** Read one dataset file from a source; undefined when the build lacks it. */
 export function loadSnapshot(source: BuildSource, file: string): Snapshot | undefined {
@@ -202,7 +257,7 @@ export function loadSnapshot(source: BuildSource, file: string): Snapshot | unde
     const full = path.join(source.path, file);
     if (fs.existsSync(full)) text = fs.readFileSync(full, "utf-8");
     else if (fs.existsSync(`${full}.gz`)) text = zlib.gunzipSync(fs.readFileSync(`${full}.gz`)).toString("utf-8");
-    else return undefined;
+    else return source.fallback ? loadSnapshot(source.fallback, file) : undefined;
   } else {
     try {
       text = git(source.repoDir, ["show", `${source.tag}:data/${file}`]);
@@ -212,16 +267,108 @@ export function loadSnapshot(source: BuildSource, file: string): Snapshot | unde
   }
   const parsed = JSON.parse(text) as Record<string, unknown>;
   return {
+    source: describeSource(source),
     build: typeof parsed._build === "string" ? parsed._build : undefined,
     extracted: typeof parsed._extracted === "string" ? parsed._extracted : undefined,
     body: parsed,
   };
 }
 
-/** Dataset files present in either source. */
+/**
+ * The published-string rule of scripts/publish-dump.mjs (KEEP_KEY, DROP_KEY,
+ * MAX_VALUE_LENGTH there; diff.test.ts fails if the two drift apart): name-
+ * shaped keys only, no prose namespaces, no long values.
+ */
+const PUBLISHED_KEY = /(^|_)(Names?|Titles?|DisplayName|ShortName|Nickname)([A-Z0-9_]|$)/;
+const UNPUBLISHED_KEY = /desc|tooltip|hint|subtitle|^Dlg_|^PU_|^DX[SM]/i;
+const MAX_PUBLISHED_VALUE = 120;
+
+/** Whether publish keeps this localisation entry. */
+export function isPublishedString(key: string, value: unknown): boolean {
+  if (typeof value !== "string" || !value || value.length > MAX_PUBLISHED_VALUE) return false;
+  return !UNPUBLISHED_KEY.test(key) && PUBLISHED_KEY.test(key);
+}
+
+type Body = Record<string, unknown>;
+
+const isRedactedTable = (body: Body) => !!body._redacted && !!body.strings && typeof body.strings === "object";
+
+/**
+ * Make two string tables comparable. A published (redacted) table holds only
+ * name keys, so against a full local table every other key would read as
+ * added or removed. When exactly one side is redacted, the other is cut to the
+ * keys publish would keep; `note` says so. Any other pair comes back as is.
+ */
+export function alignRedaction(before: Body, after: Body): { before: Body; after: Body; note?: string } {
+  const prose = alignProse(before, after);
+  if (prose) return prose;
+  const ra = isRedactedTable(before);
+  const rb = isRedactedTable(after);
+  if (ra === rb) return { before, after };
+  const full = ra ? after : before;
+  if (!full.strings || typeof full.strings !== "object") return { before, after };
+  const strings = Object.fromEntries(
+    Object.entries(full.strings as Record<string, unknown>).filter(([k, v]) => isPublishedString(k, v)),
+  );
+  const cut = { ...full, strings };
+  const note = `${ra ? "older" : "newer"} string table is the redacted published one; the ${ra ? "newer" : "older"} table is compared on published name keys only`;
+  return ra ? { before, after: cut, note } : { before: cut, after, note };
+}
+
+/** Fields a published dataset dropped, from its `_redacted` list (scripts/redact.mjs). */
+const proseRedaction = (body: Body): string[] | undefined =>
+  Array.isArray(body._redacted) ? body._redacted.filter((f): f is string => typeof f === "string") : undefined;
+
+/** Remove `fields` from every object under `value`. */
+function stripFields(value: unknown, fields: Set<string>): unknown {
+  if (Array.isArray(value)) return value.map((v) => stripFields(v, fields));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Body)
+      .filter(([k]) => !fields.has(k))
+      .map(([k, v]) => [k, stripFields(v, fields)]),
+  );
+}
+
+/**
+ * Make a full dataset comparable with one published without its prose. The
+ * published side lists the fields it lost in `_redacted`; the other side loses
+ * the same, including the long-mission-title rule ("title over N characters":
+ * the title goes and `name`, its copy, becomes the record's short name).
+ * Undefined when neither or both sides are prose-redacted.
+ */
+function alignProse(before: Body, after: Body): { before: Body; after: Body; note: string } | undefined {
+  const ra = proseRedaction(before);
+  const rb = proseRedaction(after);
+  if (!ra === !rb) return undefined;
+  const list = (ra ?? rb) as string[];
+  const full = ra ? after : before;
+  const limit = list.map((f) => /^title over (\d+) characters$/.exec(f)?.[1]).find(Boolean);
+  let cut = stripFields(full, new Set(list)) as Body;
+  if (limit && Array.isArray(cut.missions)) {
+    const max = Number(limit);
+    cut = {
+      ...cut,
+      missions: cut.missions.map((m: Body) => {
+        if (typeof m.title !== "string" || m.title.length <= max) return m;
+        const rest = { ...m };
+        delete rest.title;
+        const short = String(m.recordName ?? "").split(".").pop() || m.id;
+        return m.name === m.title ? { ...rest, name: short } : rest;
+      }),
+    };
+  }
+  const note = `${ra ? "older" : "newer"} side is the published dataset without its prose (${list.join(", ")}); the ${ra ? "newer" : "older"} side is compared without it too`;
+  return ra ? { before, after: cut, note } : { before: cut, after, note };
+}
+
+/** Dataset files present in either source, counting a snapshot's fallback; derived files excluded. */
 export function listDatasetFiles(a: BuildSource, b: BuildSource): string[] {
   const files = new Set<string>();
-  for (const source of [a, b]) {
+  const sources: BuildSource[] = [];
+  for (let s: BuildSource | undefined = a; s; s = s.kind === "dir" ? s.fallback : undefined) sources.push(s);
+  for (let s: BuildSource | undefined = b; s; s = s.kind === "dir" ? s.fallback : undefined) sources.push(s);
+  for (const source of sources) {
     const names =
       source.kind === "dir"
         ? fs.existsSync(source.path)
@@ -236,7 +383,7 @@ export function listDatasetFiles(a: BuildSource, b: BuildSource): string[] {
           })();
     for (const name of names) {
       const plain = name.replace(/\.gz$/, "");
-      if (plain.startsWith("game-") && plain.endsWith(".json")) files.add(plain);
+      if (plain.startsWith("game-") && plain.endsWith(".json") && !DERIVED_FILES.has(plain)) files.add(plain);
     }
   }
   return [...files].sort();
@@ -415,9 +562,26 @@ export interface DatasetDiff {
   file: string;
   from: { source: string; build?: string };
   to: { source: string; build?: string };
-  /** Set when one side lacks the file entirely. */
-  missing?: "from" | "to";
+  /** Set when one side lacks the file entirely, or both do. */
+  missing?: "from" | "to" | "both";
+  /**
+   * Caveats about what was compared: a side served by a snapshot's published
+   * fallback, or a string table cut to published keys (alignRedaction).
+   */
+  notes?: string[];
+  /**
+   * Records per collection on the side that has the file, when only one does:
+   * a dataset new in the newer build (missing "from") or dropped from it
+   * (missing "to") is summarised rather than skipped.
+   */
+  counts?: Record<string, number>;
   collections: CollectionDiff[];
+}
+
+/** Records per diffable collection, or just the asked-for one. */
+function collectionCounts(body: Record<string, unknown>, only?: string): Record<string, number> {
+  const names = only ? [only].filter((n) => n in body) : diffableCollections(body);
+  return Object.fromEntries(names.map((name) => [name, entriesOf(body[name]).length]));
 }
 
 export function diffDataset(
@@ -430,36 +594,50 @@ export function diffDataset(
   const after = loadSnapshot(to, file);
   const result: DatasetDiff = {
     file,
-    from: { source: describeSource(from), build: before?.build },
-    to: { source: describeSource(to), build: after?.build },
+    from: { source: before?.source ?? describeSource(from), build: before?.build },
+    to: { source: after?.source ?? describeSource(to), build: after?.build },
     collections: [],
   };
+  const notes: string[] = [];
+  if (before && before.source !== describeSource(from)) notes.push(`older side read from ${before.source} (the snapshot lacks this dataset)`);
+  if (after && after.source !== describeSource(to)) notes.push(`newer side read from ${after.source} (the snapshot lacks this dataset)`);
   if (!before || !after) {
-    result.missing = before ? "to" : "from";
+    if (notes.length > 0) result.notes = notes;
+    result.missing = before ? "to" : after ? "from" : "both";
+    const present = before ?? after;
+    if (present) result.counts = collectionCounts(present.body, options.collection);
     return result;
   }
 
+  const aligned = alignRedaction(before.body, after.body);
+  if (aligned.note) notes.push(aligned.note);
+  if (notes.length > 0) result.notes = notes;
+
   const names = options.collection
     ? [options.collection]
-    : [...new Set([...diffableCollections(before.body), ...diffableCollections(after.body)])];
+    : [...new Set([...diffableCollections(aligned.before), ...diffableCollections(aligned.after)])];
 
   for (const name of names) {
-    if (!(name in before.body) && !(name in after.body)) {
+    if (!(name in aligned.before) && !(name in aligned.after)) {
       throw new Error(
-        `${file} has no collection "${name}". Available: ${diffableCollections(after.body).join(", ")}`,
+        `${file} has no collection "${name}". Available: ${diffableCollections(aligned.after).join(", ")}`,
       );
     }
     result.collections.push(
-      diffCollection(name, entriesOf(before.body[name]), entriesOf(after.body[name]), options),
+      diffCollection(name, entriesOf(aligned.before[name]), entriesOf(aligned.after[name]), options),
     );
   }
   return result;
 }
 
-/** Dataset argument -> file: "weapons" and "game-weapons" both work. */
+/**
+ * Dataset argument -> file: "weapons" and "game-weapons" both work. Bare
+ * "strings" means the English table, the only one parse and publish write.
+ */
 export function datasetFile(name: string): string {
-  const base = name.replace(/\.json$/, "");
-  return `${base.startsWith("game-") ? base : `game-${base}`}.json`;
+  let base = name.replace(/\.json$/, "").replace(/^game-/, "");
+  if (base === "strings") base = "strings-english";
+  return `game-${base}.json`;
 }
 
 function fmt(value: unknown): string {
@@ -473,9 +651,15 @@ export function renderDiff(diff: DatasetDiff, options: { limit?: number } = {}):
   const lines: string[] = [];
   const header = `${diff.file}  ${diff.from.build ?? diff.from.source} -> ${diff.to.build ?? diff.to.source}`;
   lines.push(header);
+  for (const note of diff.notes ?? []) lines.push(`  note: ${note}`);
 
   if (diff.missing) {
-    lines.push(`  (not present in ${diff.missing === "from" ? "the older" : "the newer"} build)`);
+    const counts = Object.entries(diff.counts ?? {});
+    const total = counts.reduce((sum, [, n]) => sum + n, 0);
+    if (diff.missing === "both") lines.push("  (not present in either build)");
+    else if (diff.missing === "from") lines.push(`  new dataset (not present in the older build): ${total} record(s)`);
+    else lines.push(`  dropped (not present in the newer build): ${total} record(s) in the older build`);
+    for (const [name, n] of counts) lines.push(`  ${name}: ${n}`);
     return lines.join("\n");
   }
 

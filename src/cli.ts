@@ -45,6 +45,7 @@ import {
   renderDiff,
   resolveSource,
   saveSnapshot,
+  snapshotDataset,
   snapshotsDir,
 } from "./diff.js";
 import {
@@ -57,9 +58,17 @@ import { LANGUAGES } from "./starbreaker.js";
 import { findDataP4k, findStarBreaker, starbreakerVersion } from "./starbreaker.js";
 import { deflectionCheck, renderDeflection } from "./deflection.js";
 import { ITEM_COLUMNS, STAT_COLUMNS, patchChanges, toCsv } from "./changes.js";
+import { buildNotes, renderNotes } from "./notes.js";
+import { writeSearchIndex } from "./search-index.js";
 import { G, envelope, rangeTable, renderEnvelope, targetOf, type Target } from "./engagement.js";
 import type { Armor, Vehicle } from "./domains/ships.js";
 import type { Weapon } from "./domains/weapons.js";
+import { ammoTargets, buildLootIndex, findItems, obtain, renderObtain, type Datasets } from "./query/obtain.js";
+import type { ItemTags } from "./query/types.js";
+import { pickAmmo, renderWhere, whereSummary } from "./query/where.js";
+import { limitShop, renderShop, SHOP_ITEM_LIMIT, SHOP_TERMINAL_LIMIT, shopInventory } from "./query/shops.js";
+import { buildEntries, FIND_KEYS, hasFzf, rankEntries, renderShip, runFzf, shipKey, type ShipLike } from "./finder.js";
+import { spawnSync } from "node:child_process";
 
 interface Args {
   command: string;
@@ -71,7 +80,7 @@ interface Args {
  * Flags that take no value. Without this list a boolean flag swallows the next
  * positional, so `strings --starstrings Ouratite` loses the search term.
  */
-const BOOLEAN_FLAGS = new Set(["help", "write", "keys-only", "diff", "installed", "json", "detail", "fetch"]);
+const BOOLEAN_FLAGS = new Set(["help", "write", "keys-only", "diff", "installed", "json", "detail", "fetch", "all", "list", "print", "ammo"]);
 
 function parseArgs(argv: string[]): Args {
   const [command = "help", ...rest] = argv;
@@ -103,6 +112,16 @@ function parseArgs(argv: string[]): Args {
   return { command, flags, domains };
 }
 
+/** --limit as a positive integer, or `fallback` when absent; "all" (when allowed) is Infinity. */
+function limitFlag(flags: Map<string, string>, fallback: number, options: { all?: boolean } = {}): number {
+  const raw = flags.get("limit");
+  if (raw === undefined) return fallback;
+  if (options.all && raw === "all") return Infinity;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`--limit needs a positive whole number${options.all ? ' or "all"' : ""}, got "${raw}"`);
+  return n;
+}
+
 const HELP = `sc-gamedata — extract Star Citizen game data into structured JSON
 
 Usage:
@@ -123,6 +142,15 @@ Commands:
   diff <a> <b>     What changed between two builds, for one or every dataset
   deflect <ship>   Which ship weapons get through a ship's stock armour
   changes <a> <b>  Buffs and nerfs between two builds as chart-ready CSV and JSON
+  notes <a> <b>    Player-facing patch notes between two builds (Markdown or JSON)
+  find [query]     Fuzzy-find any item or ship (fzf, with live preview and
+                   action keys); prints ranked matches without fzf or a TTY
+  obtain <item>    Where an item comes from: best loot areas and boxes, loot
+                   tables, blueprints, mission/Wikelo awards, shops
+  where <item>     The same sources as one short table, easiest first:
+                   buy, then contract/mission reward or crafting, then loot
+  shop <place>     Every item UEX lists at a terminal or place (station, city,
+                   moon, planet, system), with price and last-confirmed date
   engage <ship> [target]
                    A loadout's hull DPS on a target by distance, and its effective ranges
   help             Show this message
@@ -153,7 +181,22 @@ Options:
   --json                diff: machine-readable output
   --fetch               builds: fetch tags from the dumps repo first
   --size <n>            deflect: only weapons of this size
+  --limit <n>           obtain: areas listed (default 15); find: matches printed
+  --all                 find: include world furniture (cargo, doors, seats, ...)
+  --list                find: print ranked matches instead of opening fzf
+  --print               find: print the picked key(s) only, for scripts
+  --json                obtain, where, shop: machine-readable report
+  --at <place>          obtain, where: only shops at this terminal or place
+                        ("grim hex", "GrimHEX", "Yela", "Orison")
+  --ammo                obtain, where: report on the magazine or canister the
+                        matched weapon loads instead of the weapon
+  --limit <n>|all       shop: items listed per terminal (default 25)
+  --all                 shop: list every matched terminal, not a place list
+                        past 15 terminals
   --export-dir <path>   changes: where to write (default ./exports)
+  --min-change <pct>    notes: hide numeric changes under this percent (default 1)
+  --write <file.md>     notes: also write the notes to a file (.json writes JSON)
+  --json                notes: the notes document as JSON
   --target <ship>       engage: the ship being shot (or give it as a second name)
   --weapons <list>      engage: guns instead of the stock loadout, by record,
                         "name S<size>" or name, each optionally *count
@@ -189,7 +232,17 @@ Examples:
   sc-gamedata diff 4.10 local weapons --fields dps,alpha,fireRate --detail
   sc-gamedata diff ./data-old ./data --json
   sc-gamedata deflect perseus --size 3
+  sc-gamedata find
+  sc-gamedata find verdict
+  sc-gamedata find kastak lmg --list
+  sc-gamedata obtain "Verdict LMG"
+  sc-gamedata obtain ksar_pistol_energy_01 --json
+  sc-gamedata obtain "Cambio SRT Canister" --at grimhex
+  sc-gamedata obtain "Cambio SRT" --ammo --at grimhex
+  sc-gamedata where "FS-9 LMG"
+  sc-gamedata shop "grim hex"
   sc-gamedata changes 4.10 local
+  sc-gamedata notes 4.10.197 local --write notes.md
   sc-gamedata engage gladius --target perseus
   sc-gamedata engage --weapons "M7A Cannon*2,AD5B Ballistic Gatling" --target "Hammerhead" --accel 6
 
@@ -343,7 +396,7 @@ async function main() {
       }
       const { changed, added } = diffStrings(base, overlayTable);
       console.log(`\noverlay changes ${changed.length} string(s) and adds ${added.length}`);
-      for (const change of changed.slice(0, Number(flags.get("limit") ?? 10))) {
+      for (const change of changed.slice(0, limitFlag(flags, 10))) {
         console.log(`  ${change.key}`);
         console.log(`      base    ${(change.base ?? "").slice(0, 90)}`);
         console.log(`      overlay ${change.overlay.slice(0, 90)}`);
@@ -359,7 +412,7 @@ async function main() {
     const query = requested.join(" ");
     if (query) {
       const { total, hits } = searchStrings(table, query, {
-        limit: Number(flags.get("limit") ?? 25),
+        limit: limitFlag(flags, 25),
         keysOnly: flags.has("keys-only"),
       });
       console.log(`\n${total} match(es) for "${query}"${total > hits.length ? `, showing ${hits.length}` : ""}`);
@@ -373,6 +426,10 @@ async function main() {
         language,
       );
       console.log(`\nwrote ${written.strings} strings to ${written.file}`);
+      // Parse saves its snapshot before this runs (Makefile STRINGS step), so
+      // the string table is filed under its own build stamp here.
+      const kept = snapshotDataset(written.file, snapshotsDir(repoRoot()));
+      if (kept) console.log(`snapshot    ${kept.path} (diff against it as "${kept.build}")`);
     }
 
     if (!key && !query && !flags.has("write") && !flags.has("diff")) {
@@ -531,12 +588,36 @@ async function main() {
     const top = result.stats
       .filter((s) => s.percent !== undefined)
       .sort((a, b) => Math.abs(b.percent ?? 0) - Math.abs(a.percent ?? 0))
-      .slice(0, Number(flags.get("limit") ?? 10));
+      .slice(0, limitFlag(flags, 10));
     if (top.length > 0) console.log("\n  largest moves:");
     for (const s of top) {
       console.log(`    ${s.direction.padEnd(7)} ${s.name} (S${s.size ?? "?"}) ${s.stat}: ${s.before} -> ${s.after} (${(s.percent ?? 0) > 0 ? "+" : ""}${s.percent}%)`);
     }
     console.log(`\nwrote ${dir}`);
+    return;
+  }
+
+  if (command === "notes") {
+    // --write is a boolean flag for `strings`, so its file lands as the third positional.
+    const [fromSpec, toSpec, writeTarget] = requested;
+    if (!fromSpec || !toSpec) throw new Error("notes needs two builds: sc-gamedata notes <from> <to> [--json] [--min-change <pct>] [--write <file.md>]");
+    const minChange = flags.has("min-change") ? Number(flags.get("min-change")) : 1;
+    if (!Number.isFinite(minChange) || minChange < 0) throw new Error("--min-change takes a percent, e.g. --min-change 2");
+    const dataDir = path.resolve(flags.get("out") ?? "data");
+    const repo = dumpsRepoOptions(repoRoot());
+    const snapshots = snapshotsDir(repoRoot());
+    const from = resolveSource(fromSpec, { dataDir, repo, snapshots });
+    const to = resolveSource(toSpec, { dataDir, repo, snapshots });
+    const doc = buildNotes(from, to, { minChange });
+    const json = JSON.stringify(doc, null, 2);
+    const markdown = renderNotes(doc);
+    if (flags.has("write")) {
+      if (!writeTarget) throw new Error("--write needs a file: --write notes.md (or notes.json for the JSON document)");
+      const file = path.resolve(writeTarget);
+      await fs.writeFile(file, file.endsWith(".json") ? `${json}\n` : markdown);
+      console.error(`wrote ${file}`);
+    }
+    console.log(flags.has("json") ? json : markdown);
     return;
   }
 
@@ -575,7 +656,7 @@ async function main() {
       collection: flags.get("collection"),
       fields: fields && fields.length > 0 ? fields : undefined,
       detail: flags.has("detail"),
-      limit: Number(flags.get("limit") ?? 20),
+      limit: limitFlag(flags, 20),
     };
 
     const files = datasetArg ? [datasetFile(datasetArg)] : listDatasetFiles(from, to);
@@ -625,7 +706,211 @@ async function main() {
     if (matches.length > 1) {
       console.log(`${matches.length} ships match; showing ${ship.recordName}. Use the record name to pick another.\n`);
     }
-    console.log(renderDeflection(ship.name, ship.armor as Armor, rows, Number(flags.get("limit") ?? 30)));
+    console.log(renderDeflection(ship.name, ship.armor as Armor, rows, limitFlag(flags, 30)));
+    return;
+  }
+
+  if (command === "find" || command === "find-run") {
+    const dataDir = path.resolve(flags.get("out") ?? "data");
+    const readJson = async <T>(file: string): Promise<T | undefined> => {
+      try {
+        return JSON.parse(await fs.readFile(path.join(dataDir, file), "utf8")) as T;
+      } catch {
+        return undefined;
+      }
+    };
+    const self = [process.execPath, path.resolve(process.argv[1])];
+    const again = (args: string[]) => {
+      const r = spawnSync(self[0], [self[1], ...args, "--out", dataDir], { stdio: "inherit" });
+      process.exitCode = r.status ?? 1;
+    };
+
+    if (command === "find-run") {
+      const [action, kind, key] = requested;
+      if (!action || !kind || !key) throw new Error("find-run <action> <item|ship> <key>");
+      if (kind === "item") {
+        if (action === "preview") return again(["obtain", key, "--limit", "8"]);
+        if (action === "report") return again(["obtain", key, "--limit", "60"]);
+        if (action === "json") return again(["obtain", key, "--json"]);
+        if (action === "tags") {
+          const tags = await readJson<{ items: Datasets["items"] }>("game-item-tags.json");
+          console.log(JSON.stringify(tags?.items.find((i) => i.className === key) ?? null, null, 2));
+          return;
+        }
+        console.log(`${action} works on ships; ${key} is an item.`);
+        return;
+      }
+      if (action === "engage") return again(["engage", key]);
+      if (action === "deflect") return again(["deflect", key]);
+      const ships = await readJson<{ vehicles: Record<string, unknown>[] }>("game-ships.json");
+      const ship = ships?.vehicles.find((v) => typeof v.recordName === "string" && shipKey(v.recordName) === key);
+      if (!ship) throw new Error(`No ship ${key} in game-ships.json`);
+      console.log(action === "preview" || action === "report" ? renderShip(ship) : JSON.stringify(ship, null, 2));
+      return;
+    }
+
+    const [tags, ships] = await Promise.all([
+      readJson<{ items: Datasets["items"] }>("game-item-tags.json"),
+      readJson<{ vehicles: ShipLike[] }>("game-ships.json"),
+    ]);
+    if (!tags && !ships) throw new Error(`No game-item-tags.json or game-ships.json in ${dataDir}; run: make parse DOMAINS="item-tags ships"`);
+    const entries = buildEntries(tags?.items ?? [], ships?.vehicles ?? [], { all: flags.has("all") });
+    const query = requested.join(" ").trim();
+    const interactive = !flags.has("list") && process.stdout.isTTY && process.stdin.isTTY && hasFzf();
+
+    if (interactive) {
+      const picked = runFzf(entries, self, { query, trailing: ["--out", dataDir] });
+      if (picked.length > 0) console.log(picked.join("\n"));
+      return;
+    }
+    const ranked = rankEntries(entries, query);
+    const limit = limitFlag(flags, 25);
+    if (flags.has("print")) {
+      for (const e of ranked.slice(0, limit)) console.log(e.key);
+      return;
+    }
+    if (ranked.length === 0) throw new Error(`Nothing matches "${query}".`);
+    for (const e of ranked.slice(0, limit)) {
+      console.log(`  ${e.key.padEnd(48)} ${e.name.slice(0, 44).padEnd(44)} ${(e.kind === "ship" ? `ship ${e.type ?? ""}` : (e.type ?? "")).slice(0, 22).padEnd(22)} ${e.maker ?? ""}`);
+    }
+    if (ranked.length > limit) console.log(`  ... ${ranked.length - limit} more (--limit)`);
+    if (!hasFzf()) console.log(`\ninstall fzf for the interactive picker; keys: ${FIND_KEYS.map(([k]) => k).join(", ")}`);
+    return;
+  }
+
+  if (command === "obtain" || command === "where") {
+    const wanted = requested.join(" ").trim();
+    if (!wanted) throw new Error(`${command} needs an item: sc-gamedata ${command} <name or class name>`);
+    const dataDir = path.resolve(flags.get("out") ?? "data");
+    const load = async <T>(file: string, required = false): Promise<T | undefined> => {
+      try {
+        return JSON.parse(await fs.readFile(path.join(dataDir, file), "utf8")) as T;
+      } catch (error) {
+        if (required) throw new Error(`${file} missing in ${dataDir}; run: make parse DOMAINS="${file.replace(/\.json$/, "")}"`, { cause: error });
+        return undefined;
+      }
+    };
+    const [tags, loot, sources, blueprints, wikelo, shops, terminals] = await Promise.all([
+      load<{ items: Datasets["items"] }>("game-item-tags.json", true),
+      load<Datasets["loot"]>("game-loot.json"),
+      load<{ areas: Datasets["areas"]; contractAwards: Datasets["contractAwards"] }>("game-item-sources.json"),
+      load<{ blueprints: Datasets["blueprints"] }>("game-blueprints.json"),
+      load<{ trades: Datasets["wikelo"] }>("game-wikelo-trades.json"),
+      load<{ prices: Datasets["shops"]; _fetched?: string }>("uex-item-prices.json"),
+      load<{ terminals: Datasets["terminals"] }>("uex-terminals.json"),
+    ]);
+    const datasets: Datasets = {
+      items: tags?.items ?? [],
+      loot,
+      areas: sources?.areas,
+      contractAwards: sources?.contractAwards,
+      blueprints: blueprints?.blueprints,
+      wikelo: wikelo?.trades,
+      shops: shops?.prices,
+      terminals: terminals?.terminals,
+      shopsAsOf: shops?._fetched,
+    };
+    let found = findItems(datasets.items, wanted);
+    if (found.length === 0) {
+      // No word match: take the best fuzzy one (typos land here), with every record of that name.
+      const ranked = rankEntries(buildEntries(datasets.items, []), wanted).filter((e) => e.kind === "item");
+      if (ranked.length === 0) throw new Error(`No item matches "${wanted}".`);
+      const best = datasets.items.find((i) => i.className === ranked[0].key);
+      if (!best) throw new Error(`No item matches "${wanted}".`);
+      found = datasets.items.filter((i) => i.name === best.name);
+      const others = [...new Set(ranked.slice(1).map((e) => e.name))].filter((n) => n !== best.name).slice(0, 4);
+      console.error(`no item named "${wanted}"; using the closest, ${best.name} (${best.className})${others.length > 0 ? `; others: ${others.join(", ")}` : ""}`);
+    }
+    const index = loot ? buildLootIndex(loot) : undefined;
+    const limit = limitFlag(flags, 15);
+    const at = flags.get("at");
+    if (at === "true") throw new Error("--at needs a place, e.g. --at grimhex");
+
+    // --ammo: report on what the matched weapons load instead of the weapons.
+    let targets: { item: ItemTags; ammoFor?: ItemTags[] }[] = found.map((item) => ({ item }));
+    if (flags.has("ammo")) {
+      const ammo = ammoTargets(datasets.items, found);
+      if (ammo.length === 0) {
+        throw new Error(`No weapon matching "${wanted}" names a magazine or canister in game-item-tags.json (re-parse item-tags if it predates ammoItems).`);
+      }
+      targets = ammo.map((t) => ({ item: t.ammo, ammoFor: t.weapons }));
+    }
+    const shown = targets.length <= 3 || flags.has("ammo") ? targets : [];
+    const report = (t: (typeof targets)[number]) => obtain(datasets, t.item, index, { at, ammoFor: t.ammoFor });
+    const shopsLoaded = shops !== undefined;
+
+    if (shown.length === 0 && !flags.has("json")) {
+      console.log(`${found.length} items match "${wanted}"; narrow it, or use a class name:\n`);
+      for (const m of found.slice(0, 40)) console.log(`  ${m.className.padEnd(48)} ${m.name}`);
+      if (found.length > 40) console.log(`  ... ${found.length - 40} more`);
+      return;
+    }
+    const picked = shown.length > 0 ? shown : targets.slice(0, 1);
+    const reports = picked.map(report);
+    // Ammo can be several records (empty and filled canister): the one you can buy leads, and a
+    // sourceless twin (a creature's magazine with the same port tag) is dropped when another has a source.
+    const ammoPick = flags.has("ammo") ? pickAmmo(reports.map((r) => whereSummary(r, { shopsLoaded }))) : { keep: reports.map((_, i) => i), dropped: [] };
+    const order = ammoPick.keep;
+    const droppedNote =
+      ammoPick.dropped.length > 0
+        ? `note: ${ammoPick.dropped.length} more compatible magazine(s) with no known source left out: ${ammoPick.dropped.map((i) => reports[i].item.className).join(", ")}`
+        : undefined;
+    if (command === "where") {
+      const summaries = order.map((i) => whereSummary(reports[i], { shopsLoaded }));
+      if (flags.has("json")) {
+        console.log(JSON.stringify({ matches: found.map((m) => m.className), summaries }, null, 2));
+        return;
+      }
+      console.log(summaries.map(renderWhere).join("\n\n"));
+      if (droppedNote) console.log(`\n${droppedNote}`);
+    } else if (flags.has("json")) {
+      console.log(JSON.stringify({ matches: found.map((m) => m.className), reports: order.map((i) => reports[i]) }, null, 2));
+      return;
+    } else {
+      for (const i of order) {
+        console.log(renderObtain(reports[i], { limit, shopsLoaded }));
+        console.log("");
+      }
+      if (droppedNote) console.log(droppedNote);
+    }
+    if (command === "where" && shopsLoaded) console.log("\nshop rows: UEX, player-reported, not game files");
+    if (!sources) console.log("note: game-item-sources.json missing, so no area ranking; run: make parse DOMAINS=game-item-sources");
+    if (!shops) console.log("note: no shop data; run: sc-gamedata fetch uex-item-prices");
+    if (shops && !terminals) console.log("note: no terminal places, so shops show terminal names only; run: sc-gamedata fetch uex-terminals");
+    return;
+  }
+
+  if (command === "shop") {
+    const place = requested.join(" ").trim();
+    if (!place) throw new Error('shop needs a terminal or place: sc-gamedata shop "grim hex"');
+    const dataDir = path.resolve(flags.get("out") ?? "data");
+    const load = async <T>(file: string): Promise<T | undefined> => {
+      try {
+        return JSON.parse(await fs.readFile(path.join(dataDir, file), "utf8")) as T;
+      } catch {
+        return undefined;
+      }
+    };
+    const [prices, terminals, tags] = await Promise.all([
+      load<{ prices: Datasets["shops"]; _fetched?: string }>("uex-item-prices.json"),
+      load<{ terminals: Datasets["terminals"] }>("uex-terminals.json"),
+      load<{ items: Datasets["items"] }>("game-item-tags.json"),
+    ]);
+    if (!prices?.prices) throw new Error(`uex-item-prices.json missing in ${dataDir}; run: sc-gamedata fetch uex-item-prices`);
+    const report = shopInventory(
+      { shops: prices.prices, terminals: terminals?.terminals, items: tags?.items, asOf: prices._fetched },
+      place,
+    );
+    if (flags.has("json")) {
+      const cut = limitShop(report, { limit: limitFlag(flags, SHOP_ITEM_LIMIT, { all: true }), maxTerminals: flags.has("all") ? Infinity : SHOP_TERMINAL_LIMIT });
+      console.log(JSON.stringify({ fetched: prices._fetched, ...cut }, null, 2));
+      return;
+    }
+    const limit = limitFlag(flags, SHOP_ITEM_LIMIT, { all: true });
+    const maxTerminals = flags.has("all") ? Infinity : SHOP_TERMINAL_LIMIT;
+    console.log(renderShop(report, { limit, maxTerminals }));
+    if (prices._fetched) console.log(`\nprices fetched ${prices._fetched.slice(0, 10)}`);
+    if (!terminals) console.log("note: no terminal places, so only terminal names match; run: sc-gamedata fetch uex-terminals");
     return;
   }
 
@@ -723,6 +1008,12 @@ async function main() {
       );
       console.log(`snapshot    ${kept.path} (${kept.datasets} dataset(s); diff against it as "${build}")`);
     }
+    // Derived from item-tags + ships, so rebuilt after every parse that leaves
+    // both on disk (and removed when one is gone). It is published, but
+    // saveSnapshot, diff and notes skip it (diff.ts DERIVED_FILES): positional
+    // rows would make a noisy diff of data the two inputs already carry.
+    const index = writeSearchIndex(outDir);
+    if (index) console.log(`search      ${index.file} (${index.entries} entries, ${(index.bytes / 1024).toFixed(0)} KB)`);
 
     console.log(`\nwrote ${written.length} dataset(s) to ${outDir}`);
     for (const { dataset, collections } of written) {

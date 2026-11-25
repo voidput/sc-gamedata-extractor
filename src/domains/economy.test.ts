@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { boxSizes, cargoDomain, parseCargoManifest } from "./cargo.js";
-import { commoditiesDomain, descriptionOf, parseCommodityItem, parseResourceDatabase, scuOf } from "./commodities.js";
+import { commoditiesDomain, damageGroups, descriptionOf, groupLabel, parseCommodityItem, parseResourceDatabase, qualitySteps, resourceLinks, scuOf, withSteps } from "./commodities.js";
 import { quantumDomain } from "./quantum.js";
 import { parseRatings, refiningDomain } from "./refining.js";
 import { salvageDomain } from "./salvage.js";
@@ -380,5 +380,91 @@ describe("salvage and quantum", () => {
       localization: empty,
     });
     expect(quantum.rules).toMatchObject({ minimumAltitudeForQuantum: 2000, rollbackFullRotationDistance: 2450000 });
+  });
+});
+
+describe("commodity derived fields", () => {
+  const base = { id: "", subgroups: [] as string[] };
+  const resources = [
+    { ...base, name: "Raw_Quantainium", recordName: "ResourceType.Raw_Quantainium", group: "Metal", subgroups: ["UnrefinedOres"], refinesTo: "Quantainium", densityGramsPerCc: 2.4, volatility: { volatility: 0.6 } },
+    { ...base, name: "Quantainium", recordName: "ResourceType.Quantainium", group: "Metal", densityGramsPerCc: 1 },
+    { ...base, name: "Heat", recordName: "ResourceType.Heat", group: "HeatPlaceholder" },
+  ];
+  const items = [
+    { name: "quantainium_raw", recordName: "EntityClassDefinition.quantainium_raw", id: "", category: "metals", resource: "Raw_Quantainium", type: "Metal", capacityScu: 1 },
+  ];
+  const [raw, refined, heat] = resourceLinks(resources, items);
+
+  it("labels groups and flags placeholders as not tradable", () => {
+    expect(groupLabel("UnrefinedOres")).toBe("Unrefined Ores");
+    expect(groupLabel("Raw_Minerals")).toBe("Raw Minerals");
+    expect(raw.groupLabel).toBe("Metal");
+    expect(raw.subgroupLabel).toBe("Unrefined Ores");
+    expect(heat.tradable).toBe(false);
+    expect(raw.tradable).toBe(true);
+  });
+
+  it("links a raw ore and its refined form both ways, with its cargo", () => {
+    expect(raw.raw).toBe(true);
+    expect(raw.volatile).toBe(true);
+    expect(raw.cargo).toEqual([{ className: "quantainium_raw", kind: "Metal", capacityScu: 1 }]);
+    expect(refined.raw).toBe(false);
+    expect(refined.rawSources).toEqual(["Raw_Quantainium"]);
+    expect(refined.volatile).toBeUndefined();
+  });
+
+  it("marks the engine-default density", () => {
+    expect(refined.densityIsDefault).toBe(true);
+    expect(raw.densityIsDefault).toBeUndefined();
+  });
+
+  it("groups damage configurations with identical settings", () => {
+    const same = { minimumSpeed: 15, gracePeriod: 10 };
+    const groups = damageGroups([
+      { name: "Base", recordName: "C.Base", ...same },
+      { name: "Mole", recordName: "C.Mole", ...same },
+      { name: "Odd", recordName: "C.Odd", minimumSpeed: 5 },
+    ]);
+    expect(groups).toEqual([
+      { configs: ["Base", "Mole"], ...same },
+      { configs: ["Odd"], minimumSpeed: 5 },
+    ]);
+  });
+});
+
+describe("quality steps", () => {
+  const aphorite = {
+    distribution: { min: 201, max: 1000, mean: 201, stddev: 298 },
+    locationOverrides: [{ location: "Pyro System", min: 201, max: 1000, mean: 209, stddev: 308 }],
+    bands: [
+      { start: 0, end: 399, value: 348 },
+      { start: 400, end: 599, value: 523 },
+      { start: 600, end: 1000, value: 800 },
+    ],
+  };
+
+  it("clips bands to the curve: a roll in 201-399 shows as 348", () => {
+    const steps = qualitySteps(aphorite.bands, aphorite.distribution) ?? [];
+    expect(steps.map((s) => [s.start, s.end, s.shown])).toEqual([[201, 399, 348], [400, 599, 523], [600, 1000, 800]]);
+  });
+
+  it("shares sum to 1 and match the app's estimate", () => {
+    const steps = qualitySteps(aphorite.bands, aphorite.distribution) ?? [];
+    const sum = steps.reduce((n, s) => n + (s.shareEstimate ?? 0), 0);
+    expect(Math.abs(sum - 1)).toBeLessThan(1e-6);
+    expect(steps[0].shareEstimate).toBeCloseTo(0.497, 2);
+    expect(steps[0].shareEstimate! > steps[1].shareEstimate! && steps[1].shareEstimate! > steps[2].shareEstimate!).toBe(true);
+  });
+
+  it("omits the share without a spread and drops unreachable bands", () => {
+    const steps = qualitySteps([{ start: 0, end: 499, value: 250 }, { start: 500, end: 999, value: 750 }], { min: 0, max: 400 }) ?? [];
+    expect(steps).toEqual([{ start: 0, end: 400, shown: 250, shareEstimate: undefined }]);
+  });
+
+  it("gives each location override its own steps", () => {
+    const q = withSteps(aphorite);
+    expect(q?.steps?.length).toBe(3);
+    expect(q?.locationOverrides?.[0].steps?.length).toBe(3);
+    expect(q?.locationOverrides?.[0].steps?.[0].shareEstimate).not.toBe(q?.steps?.[0].shareEstimate);
   });
 });

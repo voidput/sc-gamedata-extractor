@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { collectHaulingOrders, splitRecordName, wikeloDomain, parseWikeloTrade } from "./wikelo.js";
+import { collectHaulingOrders, splitRecordName, wikeloDomain, parseWikeloTrade, type WikeloTrade } from "./wikelo.js";
 import type { GameRecord } from "../records.js";
 
 function template(shortName: string, orders: unknown[]): GameRecord {
@@ -89,5 +89,80 @@ describe("wikeloDomain.parse", () => {
   it("marks the reward as inferred, since no reward field exists", () => {
     const trade = parseWikeloTrade(records[0]);
     expect(trade?.rewardInferred).toBe("Polaris");
+  });
+});
+
+describe("wikelo rewards", () => {
+  const ROOT = "file://./../../../../../libs/foundry/records/";
+  const template = (short: string): GameRecord => ({
+    id: `id-${short}`,
+    name: `ContractTemplate.${short}`,
+    shortName: short,
+    type: "ContractTemplate",
+    recordPath: `${ROOT}contracts/contracttemplates/${short.toLowerCase()}.json`,
+    value: { handler: { orders: [{ _Type_: "HaulingOrder_EntityClass", entityClass: `${ROOT}entities/x/wikelo_favor.json`, minAmount: 1 }] } },
+  });
+  const generator: GameRecord = {
+    id: "gen",
+    name: "ContractGenerator.thecollector",
+    shortName: "thecollector",
+    type: "ContractGenerator",
+    recordPath: `${ROOT}contracts/contractgenerator/thecollector.json`,
+    value: {
+      generators: [
+        {
+          contracts: [
+            {
+              _Type_: "Contract",
+              debugName: "TheCollector_Vehicle_Polaris",
+              template: `${ROOT}contracts/contracttemplates/thecollector_vehicles_polaris.json`,
+              contractResults: {
+                contractResults: [
+                  { _Type_: "ContractResult_Item", missionResults: [true, false], entityClass: `${ROOT}entities/spaceships/rsi_polaris_collector_military.json`, amount: 1 },
+                  { _Type_: "ContractResult_Item", missionResults: [false, true], entityClass: `${ROOT}entities/x/consolation.json`, amount: 1 },
+                ],
+              },
+            },
+            {
+              _Type_: "Contract",
+              debugName: "TheCollector_Spirit",
+              template: `${ROOT}contracts/contracttemplates/thecollector_vehicles_sprirt_c1.json`,
+              contractResults: {
+                contractResults: [
+                  {
+                    _Type_: "ContractResult_ItemsWeighting",
+                    awards: [{ _Type_: "ItemAwardWeightings", weighting: 0.5, items: [{ _Type_: "ItemAwardEntityClass", entityClass: `${ROOT}entities/x/drak_cutter.json`, amountToAward: 1 }] }],
+                  },
+                ],
+              },
+            },
+            { _Type_: "Contract", debugName: "TheCollector_Idris", template: `${ROOT}contracts/contracttemplates/itemresourcegathering_thecollector.json` },
+          ],
+        },
+      ],
+    },
+  };
+  const out = wikeloDomain.parse({
+    records: [template("TheCollector_Vehicles_Polaris"), template("TheCollector_Vehicles_Sprirt_C1"), template("TheCollector_Vehicles_Nox"), generator],
+    localization: new Map(),
+  }) as { trades: WikeloTrade[]; summary: Record<string, unknown> };
+  const trade = (name: string) => out.trades.find((t) => t.name === name);
+
+  it("takes the award from the contract running the template, success results only", () => {
+    expect(trade("TheCollector_Vehicles_Polaris")?.rewards).toEqual([{ item: "rsi_polaris_collector_military", amount: 1, source: "award" }]);
+    expect(trade("TheCollector_Vehicles_Polaris")?.contracts).toEqual(["TheCollector_Vehicle_Polaris"]);
+  });
+
+  it("keeps weighted choices and falls back to the inferred reward", () => {
+    expect(trade("TheCollector_Vehicles_Sprirt_C1")?.rewards).toEqual([{ item: "drak_cutter", amount: 1, weighting: 0.5, source: "award" }]);
+    expect(trade("TheCollector_Vehicles_Nox")?.rewards).toEqual([{ item: "Nox", source: "inferred" }]);
+    expect(trade("TheCollector_Vehicles_Nox")?.rewardInferred).toBe("Nox");
+  });
+
+  it("flags vehicle trades whose name and award disagree, and contracts no template trade covers", () => {
+    expect(out.summary.rewardMismatch).toEqual([{ trade: "TheCollector_Vehicles_Sprirt_C1", inferred: "Sprirt C1", awarded: ["drak_cutter"] }]);
+    expect(out.summary.contractsWithoutTemplateTrade).toEqual(["TheCollector_Idris"]);
+    expect(out.summary.withAwardedReward).toBe(2);
+    expect(out.summary.withInferredRewardOnly).toBe(1);
   });
 });

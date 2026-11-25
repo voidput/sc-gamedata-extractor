@@ -34,7 +34,7 @@
  */
 
 import { component, referencedName, vec } from "../entity.js";
-import { isPlaceholderName, localize, type Localization } from "../localization.js";
+import { isPlaceholderName, localize, locRefs, type Localization, type NameStatus } from "../localization.js";
 import { at, num, str, type GameRecord } from "../records.js";
 import { indexContainers, parseComponent, type Component } from "./components.js";
 import { attachDef, healthResistances } from "./item-common.js";
@@ -55,6 +55,11 @@ export interface Vehicle {
   id: string;
   displayName?: string;
   description?: string;
+  /** String-table keys, as the table spells them; `nameStatus` (absent when real) flags a missing name. */
+  nameKey?: string;
+  descriptionKey?: string;
+  /** Absent when the name is real. */
+  nameStatus?: NameStatus;
   manufacturer?: string;
   /** "Spaceship", "Gravlev", "Ground" and similar. */
   movementClass?: string;
@@ -530,6 +535,7 @@ export function parseVehicle(
     id: record.id,
     displayName: isPlaceholderName(displayName) ? undefined : displayName,
     description: isPlaceholderName(description) ? undefined : description,
+    ...locRefs(localization, rawName, params.vehicleDescription),
     manufacturer: referencedName(params.manufacturer),
     movementClass: str(params.movementClass),
     career: isPlaceholderName(career) ? tidyClassifier(str(params.vehicleCareer)) : career,

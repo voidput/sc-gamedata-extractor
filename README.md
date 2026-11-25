@@ -32,8 +32,35 @@ Re-running against a tag that has no release creates the release, and
 `--channel` overrides the recorded channel. With make:
 `make ptu && make publish-dry && make publish`.
 
-Localisation is redacted before publishing: name keys only, no descriptive text,
-dialogue or mission prose. No game assets are ever published.
+Publishing redacts prose (`scripts/redact.mjs`); the local `data/` copy stays
+complete:
+
+- `game-strings-english.json` keeps name-shaped keys only: no descriptive
+  text, dialogue or mission prose.
+- `description` is removed from commodities, manufacturers, missions, ships and
+  starmap, and `description`, `rawDescription` and `refinedDescription` from
+  refining. Mission titles over 120 characters go too (`name` then falls back
+  to the record name); shorter titles stay, as they read as names.
+- Each redacted dataset lists what it lost in `_redacted`. Records keep their
+  string-table keys (`nameKey`, `descriptionKey`, and for missions `titleKey`
+  and `giverKey`), so the text is one lookup away in the game's own
+  `global.ini`. `nameStatus` (absent when real: `placeholder`, `unresolved` or
+  `empty`) says when the game has no real name and `name` is the class name.
+
+No game assets are ever published.
+
+Each publish also writes patch notes for the build against the previous
+published build on the same release line (same major version, by version
+order, so `4.10.200` follows `4.10.197` whatever the tag dates, and a `1.0.x`
+tag is never the base for a `4.x` build) to `notes/<build>.md` and `notes/<build>.json` in the same
+commit, beside `data/`. They come from `dist/notes.js` (the `notes` command
+below), with the newer side read from the redacted dumps exactly as published,
+so the string counts compare like with like. The dry run lists both files and
+their sizes. No earlier tag in the checkout, or no `npm run build` yet, and the
+notes are skipped with a warning rather than blocking the publish; so are notes
+that fail to build. To add notes
+to a build already out, `make republish` it. SCMCP serves them as
+`sc_release_notes`.
 
 ## Comparing builds
 
@@ -60,6 +87,26 @@ renames between patches; a rename shows as a changed field, not as one item
 removed and another added. Nested changes are reported on the flattened path,
 so a damage change reads `ammo.damage.energy: 55 -> 60`. Derived `by*` indexes
 and `summary` are skipped, since they repeat the collections they index.
+
+### Patch notes
+
+`sc-gamedata notes <from> <to>` (or `make notes FROM=4.10.197 TO=local
+[NOTES=file.md]`) turns a diff into player-facing notes: new ships, ship and
+personal weapon balance with before and after stats, armour sets, crafting,
+missions, loot, renames, and counts for everything else. Variants collapse to
+one line, templates, AI hulls and Vanduul (NPC-only) hulls and weapons are
+only counted, and moves under `--min-change` (default 1%) are hidden. A stat
+the old build had at 0 is shown without a buff/nerf verdict, and tracked
+records that changed only in other fields (a loadout, a volume) are counted
+under their section rather than dropped. Against a snapshot whose string table
+came from the redacted published tag, the full local table is compared on the
+published name keys only, and the notes say which datasets a fallback served. Markdown goes to stdout; `--json`
+prints the structured document, and `--write <file.md|file.json>` saves either.
+
+```bash
+sc-gamedata notes 4.10.197.2878 local
+sc-gamedata notes 4.10.197 local --json --min-change 2
+```
 
 ### Every patch, kept locally
 
@@ -312,7 +359,7 @@ install:
 ```bash
 export UEXTOKEN=...        # register an app at uexcorp.space
 node dist/cli.js fetch
-node dist/cli.js fetch uex-terminals
+node dist/cli.js fetch uex-terminals   # public, works without a token
 ```
 
 UEX answers HTTP 200 with a `status` field even when a request fails, so the
@@ -334,7 +381,7 @@ From game files, verified against a real extraction:
 | `game-ships` | 1144 ships and ground vehicles with role, crew, dimensions, hull resistances, the stock loadout and its totals (DPS, shields, power, fuel, cargo, thrust) |
 | `game-ammo` | 242 ammo records, 228 carrying damage. Join to weapons for DPS |
 | `game-fps-weapons` | 446 personal ranged and melee weapons |
-| `game-starmap` | 2131 locations with type, amenities, jurisdiction, and their chain from the system down (`path`, `system`) |
+| `game-starmap` | 2132 locations with type, amenities, jurisdiction, and their chain from the system down (`path`, `system`); 444 carry an absolute `position` in metres (stars, planets, moons, Lagrange points, stations, jump points, asteroid bases), read from the solar system object containers, and each its `quantum` travel geometry (arrival, obstruction and adoption radii) |
 | `game-reputation` | 380 ranks across 239 organisations |
 | `game-containers` | 582 cargo grids and inventories with capacity |
 | `game-mining-spawns` | 49 spawn locations (named and placed on the star map where it has them), 33 ores, 1014 spawn entries with each entry's share of its group; 268 rocks with RS scan signature, deposit tier, ship/vehicle/hand kind and composition with per-ore quality scale; `oreSpawns`, one row per ore per location |
@@ -345,6 +392,7 @@ From game files, verified against a real extraction:
 | `game-cargo` | 82 NPC and mission cargo manifests in 10 categories (fill mode, capacity range, resources), freight loading timings |
 | `game-salvage` | Structural salvage and repair beam constants |
 | `game-quantum` | Global quantum travel rules: minimum altitude, atmosphere limit, link range |
+| `game-fire` | Fire-hazard rules (ignition multipliers per damage type and source, oxygen range, spread distances, 900 K burning-room temperature, door threshold, damage to players) and the 490 ship items that can start a fire: ignite roll on death (chance, radius), thermal death explosion, fire share of misfires, overheat and misfire temperatures and the cooling law |
 | `game-armor` | 2429 armour pieces (476 cores, 459 arms, 468 legs, 665 helmets, 208 undersuits, 153 backpacks) with damage resistances, temperature range, radiation, storage and EM signature; 1865 clothing items with temperature range |
 | `game-loot` | 220 loot tables and 267 archetypes in both the original and V3 formats, with weights and tag paths, plus pool filters and holiday loot |
 | `game-law` | 43 crimes with felony status, prison merits, record lifetime and fines; 13 jurisdictions with base fine, prohibited goods, controlled substance limits and impound rules |
@@ -362,7 +410,7 @@ From APIs:
 
 | Dataset | Contents |
 | --- | --- |
-| `uex-terminals` | 826 terminals, shops and stations |
+| `uex-terminals` | 826 terminals, shops and stations with their station or city, moon, planet and system. Public, no token needed |
 | `uex-commodities` | 205 commodity definitions |
 | `uex-vehicle-prices` | 282 purchase and 336 rental listings, joined to ship names |
 | `uex-refinery` | 215 station and commodity yield bonuses, 20 capacities, 9 methods with yield, cost and speed ratings, audited jobs. Public, no token needed |
@@ -556,6 +604,138 @@ Provider presets are named with internal body keys (`Stanton1`, `Pyro5c`). The
 key-to-name mapping is not in the data, so a small table supplies the common ones
 and the raw key is always kept beside the label rather than guessed at.
 
+### Where to find an item
+
+`sc-gamedata obtain <item>` (or `make obtain ITEM="..."`) answers "where do I
+get this": the best loot areas and boxes, every loot table that can roll it,
+blueprints and the missions that award them, mission and Wikelo item awards,
+and shop prices. Search by display name, class name or manufacturer
+(`obtain kastak lmg`); more than three matches lists them instead.
+
+```
+make parse DOMAINS="item-tags item-sources loot blueprints wikelo-trades"
+sc-gamedata fetch uex-item-prices uex-terminals   # shop stock and places, public UEX endpoints
+sc-gamedata obtain "Verdict LMG"
+sc-gamedata obtain ksar_pistol_energy_01 --json --limit 30
+sc-gamedata obtain "Cambio SRT Canister" --at grimhex   # make obtain ITEM=... AT=grimhex
+sc-gamedata obtain "Cambio SRT" --ammo --at grimhex     # make obtain ITEM=... AMMO=1 AT=...
+sc-gamedata where "FS-9 LMG"                      # make where ITEM="FS-9 LMG"
+sc-gamedata shop "grim hex"                       # make shop AT="grim hex"
+```
+
+`--ammo` reports on what a weapon loads instead of the weapon itself:
+`obtain "Cambio SRT" --ammo` answers for the Cambio SRT Canister, headed
+`ammo for Cambio SRT: Cambio SRT Canister`. The link is `ammoItems` on each
+weapon's row in `game-item-tags.json`, read from the weapon component's
+`ammoContainerRecord` and `secondaryAmmoContainers` (the Cambio ignores its
+internal battery and refills from a canister), then widened to every magazine
+item with the same attach tag, the tag the weapon's port requires. So the empty
+and filled canister both appear, and a P4-AR also lists the CQ7 magazine, which
+carries the P4-AR's port tag. The Cambio-Lite canister has the multitool's tag
+and never does. Where several ammo records match, the one you can buy comes
+first. A magazine with no source at all (no shop, loot, blueprint or award, such
+as a creature's copy of a player magazine) is left out when another one has a
+source, and named in a closing note.
+
+`where <item>` gives the same sources as one short table per item, easiest
+first: buy (the cheapest shop, plus the cheapest confirmed in the last 30 days
+when the cheapest is stale), then contract or Wikelo awards and crafting
+blueprints with the missions that grant them, then the two best loot areas with
+their box and rough odds. It takes `--at`, `--ammo` and `--json`.
+
+Shop rows come from UEX, which players report; the game files hold no shop
+stock. Each row shows its terminal and place (station or city, moon, planet,
+system, joined from `uex-terminals` on `id_terminal`; without that file only the
+terminal name), the day UEX last had it confirmed, and `stale` when that is over
+30 days before the price file was fetched. `--at` keeps shops at one place.
+Case, spaces and punctuation are ignored, and filler words such as `station` or
+`shop` are dropped, so `grimhex`, `grim hex` and `grim hex station` match, as do
+`Yela`, `Orison` or `Stanton`. Matching takes the best tier that hits any
+terminal: an exact name (system, planet, moon, station, city, outpost or
+terminal), then whole words or word starts, then, for 4+ letters, a substring.
+So `pyro` is the Pyro system, not the Pyro Gateway on the Stanton side. A query
+needs 3+ letters. With `--at`, an item sold only elsewhere says so and shows the
+cheapest shop elsewhere.
+
+`shop <place>` lists everything sold at the matching terminals, grouped by
+terminal, named from item tags when the row's `item_uuid` is a game record, else
+by UEX. It lists 25 items per terminal (`--limit n` or `--limit all`); past 15
+terminals it lists the matching places with terminal and item counts instead
+(`--all` lists every terminal). `--json` on both gives the date and the `stale`
+flag per row.
+
+`sc-gamedata find [query]` (or `make find`) is the fuzzy front end: fzf over
+every item and ship, with the `obtain` report as a live preview and keys to act
+on the highlighted entry (enter: full report · ctrl-j: JSON · ctrl-t: tags ·
+ctrl-e / ctrl-d: engage / deflection for ships · ctrl-y: print the key and exit ·
+tab: multi-select). Unnamed variants are listed by weapon family (`Verdict
+(unnamed: ksar_lmg_energy_01)`), and player hulls rank above their AI and faction
+copies. Without fzf, or with `--list` or `--print`, it prints ranked matches.
+A word that matches nowhere may still be a typo of a word in the name, within
+one edit for 4 to 6 letters and two for 7 or more (swapped letters count as
+one), so `find cambino srt` finds the Cambio SRT. A typo hit ranks below any
+correctly spelled contiguous match but above letters merely scattered through a
+name, so `gallent` finds the Gallant first. `obtain` and `where` fall back to
+the best fuzzy match when no item matches by words, and say which one they used.
+
+Every `parse` that leaves `game-item-tags.json` and `game-ships.json` in the
+output also rebuilds `game-search-index.json`: the find entries precomputed as
+compact rows (about 0.9 MB for 14k entries, against 12 MB of inputs), with world
+furniture and templates flagged so one file serves the default list and
+`--all`. It is published with the other datasets, but `snapshot`, `diff` and
+`notes` skip it (it only restates its two inputs, as positional rows; name it,
+`diff a b search-index`, to compare it anyway), and a parse that cannot rebuild
+it removes the stale copy. The format is documented in
+`src/query/search-index.ts`; `loadSearchIndexEntries` gives back exactly what
+`buildEntries` would.
+
+The query code (`src/query/`: types, `obtain`, `where`, shop places and ages, fuzzy
+ranking, the search index format) imports nothing from Node or the rest of the
+repo. SCMCP vendors it verbatim for its `sc_find`, `sc_obtain_item`, `sc_where` and `sc_shop`
+MCP tools (`npm run sync:gamedata` there), so keep it that way;
+the tests vendor along with it.
+
+Loot never names an item; it selects by tag, so the answer is a join across
+four records:
+
+```
+object container spawn point   tags: LootSize/Large + LootRarity/Common + LootContents/Weapons
+  -> slot preset (an area)     v3slotpreset_loot_military: for those tags, spawn
+    -> slot                    Standard Container (weight 2), a rack, or a loose item
+      -> LootConfig            table, pool filter, secondary choices, max results
+        -> table -> archetype  weighted entries, each a tag selector
+          -> item tags         game-item-tags, the item's side of the match
+```
+
+Two datasets carry it:
+
+- `game-item-tags`: every item's record-level tags resolved to paths, and
+  `ammoItems` on weapons (448 personal weapons in 4.10.200; ship weapons name no
+  ammo container record, so they get none). Tags include
+  `LootGeneration/CanGenerateAsLoot` or `CannotGenerateAsLoot/<reason>`
+  (PromotionalItem, InGameReward/Wikelo, TwitchDrop, ...). Random loot is
+  opt-in: only `CanGenerateAsLoot` items roll. No loot record mentions the flag,
+  so the check is in game code, but the unflagged items are consistently
+  NPC-only (`_lr01`), creature weapons, event or contested-zone rewards and
+  store skins. Fixed rack and loose-item spawns ignore the flag.
+- `game-item-sources`: the 167 slot presets ("areas") with each spawn point's
+  tags and slots, fixed rack loadouts, and every `ItemAwardEntityClass` a
+  contract hands out.
+
+Odds are rough and labelled so. `per roll` multiplies the weight shares along
+table -> archetype -> entry -> each secondary layer (rarity, faction, and in V3
+areas manufacturer weights: Military weights Behring 100 and Kastak 1). It then
+divides by the number of items in that pool, assuming an even pick, which the
+data does not state. `odds` is the share of a spawn point's spawns that are
+that box, times up to `maxResults` rolls; containers usually stop earlier when
+full, so treat it as an upper bound and compare areas against each other rather
+than reading it as a drop rate.
+
+What it cannot say: which named locations use each area preset, and how many
+spawn points of each kind an area has. Both live in the object containers.
+Area names are the preset names, which are descriptive (`caves: loot caves
+occupied rock stanton`, `distributioncentre multiconfig lobby high`).
+
 ### Not available from the game files
 
 Refinery rates are **not** in DataCore, and this was checked exhaustively: no
@@ -565,10 +745,13 @@ nine `RefiningProcess` records carry only speed and quality labels ("Normal",
 community sites derive those numbers empirically. Mining lasers do carry
 `extractionEfficiency`, but that governs extraction, not refining.
 
-What a Wikelo trade *gives you* is likewise absent. The contract stores a
-percentage `rewardContribution` and nothing else, so `rewardInferred` is read
-from the record name and labelled as inferred rather than presented as fact. The
-hand-in lists are real, and complete.
+What a Wikelo trade *gives you* is not on the trade's ContractTemplate, which
+stores only a percentage `rewardContribution`, so `rewardInferred` is read from
+the record name and labelled as inferred. Item rewards are, however, on the
+contract generator (`contracts/contractgenerator/thecollector`) as
+`ItemAwardEntityClass` entries; `game-item-sources.contractAwards` lists them and
+`obtain` prefers them over the inferred name. The hand-in lists are real, and
+complete.
 
 ## Credits
 

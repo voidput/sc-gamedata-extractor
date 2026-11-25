@@ -26,7 +26,7 @@
  */
 
 import { component, referencedName } from "../entity.js";
-import { isPlaceholderName, localize, type Localization } from "../localization.js";
+import { isPlaceholderName, localize, locRefs, type Localization, type LocRefs } from "../localization.js";
 import { at, num, str, type GameRecord } from "../records.js";
 import { parseAmmo, type Ammo, type DamageInfo } from "./ammo.js";
 import {
@@ -96,6 +96,9 @@ export interface Weapon {
   id: string;
   class: "ship" | "fps";
   isTemplate?: true;
+  nameKey?: LocRefs["nameKey"];
+  descriptionKey?: LocRefs["descriptionKey"];
+  nameStatus?: LocRefs["nameStatus"];
   type?: string;
   subType?: string;
   size?: number;
@@ -246,6 +249,9 @@ export interface Missile {
   recordName: string;
   id: string;
   isTemplate?: true;
+  nameKey?: LocRefs["nameKey"];
+  descriptionKey?: LocRefs["descriptionKey"];
+  nameStatus?: LocRefs["nameStatus"];
   size?: number;
   manufacturer?: string;
   damage?: DamageInfo;
@@ -536,6 +542,7 @@ export function parseWeapon(
     id: record.id,
     class: weaponClass,
     isTemplate: placeholder || undefined,
+    ...locRefs(context.localization, at(def, "Localization.Name"), at(def, "Localization.Description")),
     type: str(def.Type),
     subType: str(def.SubType) === "UNDEFINED" ? undefined : str(def.SubType),
     size: num(def.Size),
@@ -605,6 +612,7 @@ export function parseMissile(record: GameRecord, localization: Localization): Mi
     recordName: record.name,
     id: record.id,
     isTemplate: placeholder || undefined,
+    ...locRefs(localization, at(def, "Localization.Name"), at(def, "Localization.Description")),
     size: num(def.Size),
     manufacturer: manufacturerOf(def),
     damage,

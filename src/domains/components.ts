@@ -23,7 +23,7 @@
  */
 
 import { component, components, referencedName } from "../entity.js";
-import { isPlaceholderName, type Localization } from "../localization.js";
+import { isPlaceholderName, type Localization, type NameStatus } from "../localization.js";
 import { at, num, str, type GameRecord } from "../records.js";
 import { parseContainer } from "./containers.js";
 import {
@@ -49,6 +49,9 @@ export interface Component {
   category: string;
   /** True when the record has no real display name, i.e. a template or stub. */
   isTemplate?: true;
+  nameKey?: string;
+  descriptionKey?: string;
+  nameStatus?: NameStatus;
   type?: string;
   subType?: string;
   size?: number;
@@ -392,6 +395,9 @@ export function parseComponent(
     return {
       name: identity.name,
       isTemplate: identity.isTemplate,
+      nameKey: identity.nameKey,
+      descriptionKey: identity.descriptionKey,
+      nameStatus: identity.nameStatus,
       recordName: record.name,
       id: record.id,
       category,

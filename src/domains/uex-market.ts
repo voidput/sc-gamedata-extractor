@@ -8,12 +8,46 @@
 import { trimRow, uexFetch, type UexOptions } from "../sources/uex.js";
 import type { ApiDomain } from "./types.js";
 
+/** The columns a terminal row keeps: what places it. Ids, flags, screenshots and contacts go. */
+const TERMINAL_KEYS = [
+  "id",
+  "name",
+  "fullname",
+  "nickname",
+  "displayname",
+  "code",
+  "type",
+  "star_system_name",
+  "planet_name",
+  "orbit_name",
+  "moon_name",
+  "space_station_name",
+  "city_name",
+  "outpost_name",
+  "is_available",
+  "is_available_live",
+];
+
+export function trimTerminalRow(row: unknown): Record<string, unknown> {
+  const source = (row ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of TERMINAL_KEYS) {
+    const value = source[key];
+    // Availability is a 0/1 flag, so its zero is data; elsewhere zero and blank mean "not set".
+    if (value === null || value === undefined || value === "") continue;
+    if (value === 0 && !key.startsWith("is_")) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 export const uexTerminalsDomain: ApiDomain = {
   name: "uex-terminals",
-  description: "Every trading terminal, shop and station with its system and planet.",
+  description: "Every terminal, shop and station with its place: station or city, moon, planet, system. Public, no token needed.",
 
   async fetch(options: UexOptions) {
-    const rows = (await uexFetch("terminals", options)).map(trimRow);
+    // Public endpoint. Price rows (uex-item-prices) join here on id_terminal.
+    const rows = (await uexFetch("terminals", { ...options, tokenOptional: true })).map(trimTerminalRow);
     return { terminals: rows, summary: { terminals: rows.length } };
   },
 };
@@ -120,9 +154,47 @@ export const uexRefineryDomain: ApiDomain = {
   },
 };
 
+/** The columns an item price row keeps; the rest is location ids and history. */
+const ITEM_PRICE_KEYS = [
+  "item_name",
+  "item_uuid",
+  "id_item",
+  "id_category",
+  "terminal_name",
+  "id_terminal",
+  "price_buy",
+  "price_sell",
+  "date_modified",
+];
+
+export function trimItemPriceRow(row: unknown): Record<string, unknown> {
+  const source = (row ?? {}) as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ITEM_PRICE_KEYS) {
+    const value = source[key];
+    if (value !== null && value !== undefined && value !== "" && value !== 0) out[key] = value;
+  }
+  return out;
+}
+
+export const uexItemPricesDomain: ApiDomain = {
+  name: "uex-item-prices",
+  description: "Where personal and ship items are sold, by terminal. Shop stock is server-side, not in the game files.",
+
+  async fetch(options: UexOptions) {
+    // Public endpoint; `item_uuid` is the game record id, the join to every other dataset.
+    const rows = (await uexFetch("items_prices_all", { ...options, tokenOptional: true })).map(trimItemPriceRow);
+    return {
+      prices: rows,
+      summary: { prices: rows.length, items: new Set(rows.map((r) => r.item_uuid)).size },
+    };
+  },
+};
+
 export const UEX_DOMAINS: ApiDomain[] = [
   uexTerminalsDomain,
   uexCommoditiesDomain,
   uexVehiclePricesDomain,
   uexRefineryDomain,
+  uexItemPricesDomain,
 ];

@@ -23,7 +23,7 @@
  * are left without one. `quantum` is the record's own quantum travel geometry.
  */
 
-import { isPlaceholderName, localize, type Localization } from "../localization.js";
+import { isPlaceholderName, localize, locRefs, type Localization, type NameStatus } from "../localization.js";
 import { at, compareNames, indexByRecordPath, num, refPath, refShortName, str, type GameRecord } from "../records.js";
 import {
   loadPlacements,
@@ -42,6 +42,11 @@ export interface Location {
   id: string;
   displayName?: string;
   description?: string;
+  /** String-table keys, as the table spells them; `nameStatus` (absent when real) flags a missing name. */
+  nameKey?: string;
+  descriptionKey?: string;
+  /** Absent when the name is real. */
+  nameStatus?: NameStatus;
   /** Record name of the containing body, forming the hierarchy. */
   parent?: string;
   /** Names from the system down to the parent: ["Stanton", "Crusader", "Daymar"]. */
@@ -210,6 +215,7 @@ export function parseLocation(
     id: record.id,
     displayName: isPlaceholderName(displayName) ? undefined : displayName,
     description: isPlaceholderName(description) ? undefined : description,
+    ...locRefs(localization, v.name, v.description),
     parent: resolveRecord(v.parent, byPath)?.name ?? refShortName(v.parent),
     type: resolveType(v.type, typeNames),
     affiliation: nameOf(v.affiliation),

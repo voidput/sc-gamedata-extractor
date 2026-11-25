@@ -10,7 +10,7 @@
  * is exactly the kind of thing a reader wants to know.
  */
 
-import { isPlaceholderName, localize, type Localization } from "../localization.js";
+import { isPlaceholderName, localize, locKey, nameStatusField, type Localization, type NameStatus } from "../localization.js";
 import { at, num, refShortName, str, type GameRecord } from "../records.js";
 import type { Domain } from "./types.js";
 
@@ -21,6 +21,12 @@ export interface Mission {
   title?: string;
   description?: string;
   giver?: string;
+  /** String-table keys, as the table spells them; `nameStatus` is the title's. */
+  titleKey?: string;
+  descriptionKey?: string;
+  giverKey?: string;
+  /** Absent when the name is real. */
+  nameStatus?: NameStatus;
   type?: string;
   difficulty?: number;
   reward?: number;
@@ -65,6 +71,10 @@ export function parseMission(record: GameRecord, localization: Localization): Mi
     title: isPlaceholderName(title) ? undefined : title,
     description: isPlaceholderName(description) ? undefined : description,
     giver: isPlaceholderName(giver) ? undefined : giver,
+    titleKey: locKey(localization, v.title),
+    descriptionKey: locKey(localization, v.description),
+    giverKey: locKey(localization, v.missionGiver),
+    nameStatus: nameStatusField(localization, v.title),
     type: referencedName(v.type),
     // -1 means unset rather than "easiest".
     difficulty: difficulty !== undefined && difficulty >= 0 ? difficulty : undefined,

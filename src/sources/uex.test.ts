@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { MissingTokenError, trimRow, uexFetch } from "./uex.js";
-import { uexRefineryDomain } from "../domains/uex-market.js";
+import { trimTerminalRow, uexRefineryDomain, uexTerminalsDomain } from "../domains/uex-market.js";
 
 function stubFetch(body: unknown, ok = true, status = 200) {
   return (async () => ({
@@ -110,5 +110,60 @@ describe("uex-refinery", () => {
     expect(out.yields).toEqual([{ id: 1, id_space_station: 55, value: -5, commodity_name: "Iron (Ore)" }]);
     expect(out.audits).toEqual([{ id: 3, quantity_yield: 2417 }]);
     expect(out.summary).toEqual({ yields: 1, capacities: 0, methods: 1, audits: 1 });
+  });
+});
+
+describe("uex-terminals", () => {
+  it("fetches without a token and keeps only what places a terminal", async () => {
+    let auth: unknown;
+    const fetchImpl = (async (_url: string, init?: { headers?: Record<string, string> }) => {
+      auth = init?.headers?.Authorization;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: "ok",
+          data: [
+            {
+              id: 115,
+              id_moon: 75,
+              name: "Dumper's Depot - GrimHEX",
+              nickname: "Dumper's GrimHEX",
+              displayname: "Grim HEX",
+              screenshot: "https://cdn/x.jpg",
+              moon_name: "Yela",
+              city_name: null,
+              outpost_name: "",
+              is_available: 1,
+              is_available_live: 0,
+              is_refinery: 0,
+            },
+          ],
+        }),
+      };
+    }) as unknown as typeof fetch;
+    const out = await uexTerminalsDomain.fetch({ token: "", fetchImpl } as never);
+    expect(auth).toBeUndefined();
+    expect(out.terminals).toEqual([
+      trimTerminalRow({
+        id: 115,
+        name: "Dumper's Depot - GrimHEX",
+        nickname: "Dumper's GrimHEX",
+        displayname: "Grim HEX",
+        moon_name: "Yela",
+        is_available: 1,
+        is_available_live: 0,
+      }),
+    ]);
+    // The availability zero is a flag, so it stays.
+    expect(out.terminals[0]).toEqual({
+      id: 115,
+      name: "Dumper's Depot - GrimHEX",
+      nickname: "Dumper's GrimHEX",
+      displayname: "Grim HEX",
+      moon_name: "Yela",
+      is_available: 1,
+      is_available_live: 0,
+    });
   });
 });
