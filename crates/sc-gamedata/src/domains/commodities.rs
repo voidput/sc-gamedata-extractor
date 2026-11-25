@@ -133,6 +133,19 @@ pub struct ResourceType {
     /// Cargo items holding it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cargo: Option<Vec<ResourceCargo>>,
+    /// Mineable elements whose `resourceType` it is (`game-mining-spawns` `ores` keys).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mined_as: Option<Vec<MinedAs>>,
+}
+
+/// One mineable element that yields a resource.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MinedAs {
+    /// Element key, as `game-mining-spawns` `oreSpawns[].ore`.
+    pub element: String,
+    /// Its `game-mining-spawns` `ores` key.
+    pub ore_key: String,
 }
 
 /// `{ className, kind, capacityScu }`: a cargo item holding a resource.
@@ -482,6 +495,7 @@ fn parse_resource(
         volatile: None,
         density_is_default: None,
         cargo: None,
+        mined_as: None,
     })
 }
 
@@ -684,6 +698,8 @@ impl Domain for Commodities {
             "**/crafting/qualityquantization/**",
             // Systems and clusters directly under pu/, which quality overrides name.
             "**/starmap/pu/*",
+            // Mineable elements, for `minedAs`.
+            "**/mining/**",
         ]
     }
 
@@ -737,7 +753,19 @@ impl Domain for Commodities {
         }
 
         let resource_count = resources.len();
-        let linked = resource_links(resources, &items);
+        let mut linked = resource_links(resources, &items);
+        let mined = crate::domains::mining_spawns::mined_elements(ctx.records);
+        for r in &mut linked {
+            let mined_as: Vec<MinedAs> = mined
+                .iter()
+                .filter(|e| e.resource.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(&r.name)))
+                .map(|e| MinedAs {
+                    element: e.element.clone(),
+                    ore_key: e.ore_key.clone(),
+                })
+                .collect();
+            r.mined_as = (!mined_as.is_empty()).then_some(mined_as);
+        }
         let estimated = linked.iter().any(|r| {
             r.quality
                 .as_ref()
@@ -947,6 +975,35 @@ pub(crate) mod tests {
         assert_eq!(keys, vec!["resources", "items", "damage", "damageGroups", "byGroup", "summary"]);
     }
 
+    #[test]
+    fn a_resource_lists_the_elements_mined_as_it() {
+        let path = |p: &str| Some(format!("libs/foundry/records/mining/{p}"));
+        let set = RecordSet::new(vec![
+            database(),
+            rec(
+                "MineableElement",
+                "Quantainium_Raw",
+                json!({"resourceType": ref_("ResourceType.Raw_Quantainium")}),
+                path("mineableelements/quantainium_raw").as_deref(),
+            ),
+            rec(
+                "MineableComposition",
+                "LegendaryShipMineables_Quantainium",
+                json!({"compositionArray": [{"mineableElement": file_ref("mining/mineableelements/quantainium_raw")}]}),
+                path("rockcompositionpresets/legendaryshipmineables_quantainium").as_deref(),
+            ),
+        ]);
+        let out = DOMAIN.parse(&ParseContext::new(&set, &Localization::new(), &NoFiles)).unwrap();
+        let quant = out["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == "Raw_Quantainium")
+            .unwrap();
+        assert_eq!(quant["minedAs"], json!([{"element": "quantainium_raw", "oreKey": "quantainium"}]));
+        assert!(out["resources"][0].get("minedAs").is_none(), "only mined resources");
+    }
+
     fn file_ref(path: &str) -> Value {
         json!(format!("file://./../../../../libs/foundry/records/{path}.json"))
     }
@@ -1022,6 +1079,7 @@ pub(crate) mod tests {
             volatile: None,
             density_is_default: None,
             cargo: None,
+            mined_as: None,
         }
     }
 

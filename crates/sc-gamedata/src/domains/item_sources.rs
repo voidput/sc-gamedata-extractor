@@ -350,6 +350,24 @@ fn parse_area(record: &GameRecord, ctx: &Context<'_>) -> Option<LootArea> {
     (!configs.is_empty()).then_some(LootArea { name, configs })
 }
 
+/// Every slot preset in `records` as a loot area, by name (the `areas` of
+/// `game-item-sources`; `game-mining-spawns` reads their mineable slots). Spawn tags
+/// resolve only when the set holds the `TagDatabase`.
+pub fn loot_areas(records: &RecordSet, localization: &Localization) -> Vec<LootArea> {
+    let context = Context {
+        records,
+        tags: build_tag_index(records.iter().find(|r| r.ty == "TagDatabase")),
+        localization,
+    };
+    let mut areas: Vec<LootArea> = records
+        .iter()
+        .filter(|r| ref_path_str(&r.record_path).is_some_and(|p| p.starts_with(SLOT_PRESETS)))
+        .filter_map(|r| parse_area(r, &context))
+        .collect();
+    areas.sort_by(|a, b| compare_names(&a.name, &b.name));
+    areas
+}
+
 /// `contractAwards`: every item a contract generator record awards.
 pub fn contract_awards(record: &GameRecord) -> Vec<ContractAward> {
     fn walk(
@@ -478,22 +496,10 @@ impl Domain for ItemSources {
     }
 
     fn parse(&self, ctx: &ParseContext<'_>) -> Result<Map<String, Value>, DomainError> {
-        let context = Context {
-            records: ctx.records,
-            tags: build_tag_index(ctx.records.iter().find(|r| r.ty == "TagDatabase")),
-            localization: ctx.localization,
-        };
+        let areas = loot_areas(ctx.records, ctx.localization);
         let under = |r: &GameRecord, prefix: &str| {
             ref_path_str(&r.record_path).is_some_and(|p| p.starts_with(prefix))
         };
-
-        let mut areas: Vec<LootArea> = ctx
-            .records
-            .iter()
-            .filter(|r| under(r, SLOT_PRESETS))
-            .filter_map(|r| parse_area(r, &context))
-            .collect();
-        areas.sort_by(|a, b| compare_names(&a.name, &b.name));
 
         let mut awards: Vec<ContractAward> = ctx
             .records
