@@ -254,6 +254,17 @@ fn extract(
         );
         write(strings::NAME, &output::to_js_json(&v))?;
     }
+    // Derived from item-tags + loot + item-sources: same rule as the index.
+    if let Some(w) = sc_gamedata::item_obtain::write_item_obtain(out)
+        .map_err(|e| format!("{}: {e}", sc_gamedata::item_obtain::FILE))?
+    {
+        eprintln!(
+            "  wrote {} ({} items, {} KB)",
+            w.file.display(),
+            w.items,
+            w.bytes / 1024
+        );
+    }
     // Derived from item-tags + ships: rebuilt after every extract that leaves both in
     // --out, removed when one is missing (as sc-gamedata's parse does).
     write_index(out)

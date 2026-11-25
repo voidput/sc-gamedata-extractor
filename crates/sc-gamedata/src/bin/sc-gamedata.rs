@@ -1846,6 +1846,22 @@ fn run_extract(command: &str, flags: &Flags, rest: &[String]) -> Result<ExitCode
     // naming domains leaves it be.
     let mut snapshot_files: Vec<String> =
         written.iter().map(|(n, _)| format!("{n}.json")).collect();
+    // Derived from item-tags + loot + item-sources (and blueprints, Wikelo trades), so
+    // rebuilt after every run that leaves them on disk (removed when one is gone). A real
+    // dataset (published, snapshotted, diffed), unlike the search index.
+    let started = std::time::Instant::now();
+    if let Some(w) = sc_gamedata::item_obtain::write_item_obtain(&out)
+        .map_err(|e| format!("{}: {e}", sc_gamedata::item_obtain::FILE))?
+    {
+        println!(
+            "obtain      {} ({} items, {:.0} KB, {:.2} s)",
+            w.file.display(),
+            w.items,
+            w.bytes as f64 / 1024.0,
+            started.elapsed().as_secs_f64()
+        );
+        snapshot_files.push(sc_gamedata::item_obtain::FILE.to_string());
+    }
     if rest.is_empty() {
         let file = write_strings(&out, &files.localization, "english", build.as_deref())?;
         println!(

@@ -1,7 +1,7 @@
 ---
 title: Dump enhancements from starorg-codex
 tags: [plans, specs, dumps]
-updated: 2026-11-23
+updated: 2026-11-25
 status: active
 ---
 
@@ -98,6 +98,78 @@ Deviations from the item text:
     hand-ins in overrides and appear in no trade. They are listed in
     `summary.contractsWithoutTemplateTrade`. Turning them into trades is a candidate
     follow-up.
+
+### Progress 2026-11-25: 4a and 3 (Rust only, `crates/sc-gamedata`, uncommitted)
+
+Built Rust-only (the TS parse is being retired on `feat/rust-switchover`), measured on LIVE
+4.10.201.48085.
+
+- **4a** (`domains/item_sources.rs`, `classify_area`): `areas[].place{label, kind}`, `family`,
+  `isTest` (omitted when false) and `placeSource`, and `summary.unplacedAreas[]`.
+  - `kind` is the name word that placed the area (`distributioncentre`); `label` is the short
+    place name (`Distribution centres`).
+  - The rule order is the app's `area_place_name`: Rock Cracker first (`curated`), then no
+    place for test and `special_*` presets, then the first `AREA_PLACES` match (`heuristic`).
+  - **Deviation from the app (review fix):** the app's test rule (`first word contains "test"`)
+    also catches `contestedzones`, so its `contestedzone` and `ghostarena` keys never match and
+    the five contested-zone presets get no place. Here `contest*` words are not tests, so those
+    five are `Contested zones` (`heuristic`). The app's `area_place_name` needs the same fix.
+  - LIVE has 167 areas: 151 heuristic, 3 curated, 1 test (`cave_full_test`) and 12 unplaced. The
+    unplaced ones are the generic, food, hightech and lowtech themes, `soo`, `tsg` and four
+    `special_*` event presets.
+  - Cost: +14.6 KB minified (1,419,702 to 1,434,344 B).
+  - Not built: the `loot_tree.rs` leaf names (UI shaping, kept in the app). The patch-notes
+    listing of `unplacedAreas` is not built either.
+- **3** (`src/item_obtain.rs`): `game-item-obtain.json` is **derived** from the item-tags,
+  loot, item-sources, blueprints and wikelo-trades datasets, like the search index.
+  - It is rebuilt after every extract that leaves its inputs on disk, and removed when an input
+    is missing.
+  - It is a real dataset, not in `DERIVED_FILES`: it is snapshotted, diffed and published.
+  - It uses the existing `query::obtain::BulkObtain` (`areas_all`, rayon), plus a new
+    `BulkObtain::other_tables` on the same memoised pool sizes.
+  - **Deviation, for size:** spawn points and table names are listed once (`spawns[]`,
+    `tables[]`), and each item's rows are index arrays:
+    - `loot[[spawn, kind, scoreEstimate, perRollEstimate]]`, named by `lootColumns`, for the
+      top 12 areas;
+    - `otherTables[[table, perRollEstimate]]`, capped at 12, with `otherTablesTotal`.
+    - Objects per row were 19.4 MB minified; index arrays are 3.45 MB.
+  - A spawn carries `area, config, entity, entityName, table, slotShare, fillChance, chance,
+    maxResults, contents, size, rarity` and `raritySource: "name"` (the fallback from the
+    config name).
+  - The other fields: `eligibility`, `areasTotal`, `contractAwards[]`, `wikelo[]{trade, amount,
+    source: award|inferred}` (from the resolved `trades[].rewards[]` of item 10), and
+    `blueprints[]{recordName, rewardContracts}`.
+  - `_assumptions` holds the even-pick note. Odds are rounded to 4 significant digits.
+  - LIVE: 5,930 items, 44,677 loot rows and 2,513 spawns. Cost: +3.45 MB minified (8.5 MB
+    pretty), just over the +2 to 3 MB budget. The obtain step takes 1.3 s, which is inside the
+    run-to-run noise of the full extract (19 to 23 s).
+  - **Acceptance:**
+    - 20 sample items (random loot with up to 12 and with more than 12 areas, fixed, loose,
+      contract awards, wikelo, blueprints) match the app's `obtain-hints.json`
+      (`4.10.201.48085-83ea8280`) after the app's row grouping, within 1e-3 relative.
+    - They also match the per-item `sc-gamedata obtain --json` path (areas, other tables,
+      awards, blueprints).
+    - All 4,003 hinted items match: rows and `lootTotal` exactly where every area is kept, and
+      as a prefix otherwise. This holds with the contested-zone places left out, as the app
+      has none (see 4a); with them, 236 items differ from the hints in a place label only.
+    - Review checks: every `spawns[]` row is found in `game-item-sources` (slot share, fill
+      chance, chance, max results, tags); `scoreEstimate` recomputes from the row for all
+      44,677 rows; 66 random items match the TypeScript `obtain` (all kept rows, other tables,
+      awards, blueprints, eligibility); two parses give the same bytes.
+    - 30 items more than the app have rows, because item 1 recovered their names, so they are
+      no longer templates.
+  - **Open:**
+    - Only classes in `game-item-tags` are listed, as in the `obtain` query. Dropped on LIVE:
+      217 blueprint products (ship shields, radars, weapons), 27 Wikelo vehicle rewards and 1
+      contract award (a ship), plus 2 inferred Wikelo rewards that name no item.
+    - Rows point at `spawns[]` by position, so one new spawn point shifts the indexes after it
+      and a build diff shows every such row as changed. The patch-notes summary has to resolve
+      the indexes before comparing.
+    - The patch-notes summary (decision 3) is not built.
+    - The starorg-strings Rust parity does not apply, since the dataset is already built from
+      the shared query code.
+    - The golden compare flags item-sources (new fields) and item-obtain (no golden) until the
+      goldens are rebuilt.
 
 ## Items, in build order
 
