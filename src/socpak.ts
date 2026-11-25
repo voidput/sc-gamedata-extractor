@@ -295,9 +295,53 @@ function onSurface(placed: PlacedContainer, radii: Map<string, number>): boolean
   return Math.hypot(x - px, y - py, z - pz) < radius;
 }
 
+/** How deep plain containers may nest inside one another below a system document. */
+const MAX_PLAIN_NESTING = 4;
+
+/**
+ * What a system document places, with the contents of its plain containers
+ * folded in. A plain container is an external `<Child>` that is no star map
+ * location itself, such as an asteroid ring segment, yet can hold bodies:
+ * Nyx's Delamar and Levski sit in `glaciemring_segment_levski`. Its children
+ * belong to the system level, placed in the plain container's frame.
+ * `onMissing` is told of each plain container not on disk.
+ */
+export function systemLevelPlacements(
+  xml: string,
+  document: (key: string) => string | undefined,
+  onMissing: (key: string) => void = () => {},
+): PlacedContainer[] {
+  const out: PlacedContainer[] = [];
+  const visit = (placements: PlacedContainer[], nesting: number, chain: Set<string>) => {
+    for (const placed of placements) {
+      out.push(placed);
+      if (placed.starMapRecord || !placed.container || nesting >= MAX_PLAIN_NESTING) continue;
+      const key = archiveKey(placed.container);
+      if (chain.has(key)) continue;
+      const inner = document(key);
+      if (inner === undefined) {
+        onMissing(key);
+        continue;
+      }
+      const frame: Frame = {
+        position: placed.position,
+        rotation: placed.rotation,
+        depth: placed.depth,
+        name: placed.entityName,
+        record: placed.parentRecord,
+        recordPosition: placed.parentPosition,
+      };
+      visit(parseContainerXml(inner, frame), nesting + 1, new Set([...chain, key]));
+    }
+  };
+  visit(parseContainerXml(xml), 0, new Set());
+  return out;
+}
+
 /**
  * Containers still to extract: those of star map locations placed by a system
- * document or by a body it places. A system's bodies come first; a second call,
+ * document or by a body it places, and the plain containers of the system
+ * level that can hold bodies. A system's bodies come first; a second call,
  * once those are on disk, finds each body's stations, whose own containers
  * hold their armistice zones. Surface locations are not followed: there are
  * hundreds, and none of them is a place in space.
@@ -311,11 +355,15 @@ export function unextractedLocationContainers(extractDir: string): string[] {
     const target = archiveKey(placed.container);
     if (!index.has(target)) wanted.add(target);
   };
+  const document = (key: string) => {
+    const file = index.get(key);
+    return file ? readContainerXml(fs.readFileSync(file)) : undefined;
+  };
 
   for (const key of systemContainers(index)) {
-    const xml = readContainerXml(fs.readFileSync(index.get(key) as string));
+    const xml = document(key);
     if (!xml) continue;
-    for (const placed of parseContainerXml(xml)) {
+    for (const placed of systemLevelPlacements(xml, document, (missing) => wanted.add(missing))) {
       want(placed);
       if (!placed.starMapRecord || !placed.container) continue;
       const file = index.get(archiveKey(placed.container));
@@ -487,7 +535,7 @@ export function loadPlacements(extractDir: string): Map<string, PlacedContainer>
     const xml = document(key);
     if (!xml) continue;
 
-    for (const placed of parseContainerXml(xml)) {
+    for (const placed of systemLevelPlacements(xml, document)) {
       keep(placed);
       if (!placed.starMapRecord || !placed.container) continue;
       const inner = document(archiveKey(placed.container));
