@@ -24,6 +24,7 @@ use serde_json::Value;
 /// plus the filters of domains added since (`game-fire`: `roomsystem/firehazard`).
 /// A ported domain's `filters()` must be a subset; a test checks the registry.
 pub const GOLDEN_EXTRACTION_FILTERS: &[&str] = &[
+    "**/actor/actors/**",
     "**/ammoparams/**",
     "**/cargomanifest/**",
     "**/commodityconfiguration/**",
@@ -59,6 +60,7 @@ pub const GOLDEN_EXTRACTION_FILTERS: &[&str] = &[
     "**/inventorycontainers/**",
     "**/lawsystem/infractiondefinitions/**",
     "**/lawsystem/jurisdictions/**",
+    "**/loadoutkits/**",
     "**/lootgeneration/**",
     "**/mining/**",
     "**/mission_entities/monitorzonejammer",
