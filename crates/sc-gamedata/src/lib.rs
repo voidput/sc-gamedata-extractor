@@ -46,6 +46,8 @@ pub mod overlays;
 pub mod pipeline;
 pub mod query;
 pub mod records;
+// D1 reverse links (stockOn, mountedOn, firedBy), added to datasets on disk.
+pub mod reverse_links;
 pub mod search_index;
 pub mod source;
 pub mod strings;
