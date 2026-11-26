@@ -21,7 +21,9 @@ use serde_json::Value;
 
 /// Every filter of every domain in the `sc-gamedata` registry that produced the golden
 /// dumps (build 4.10.200.58746), i.e. everything its extraction pulled from the DataCore,
-/// plus the filters of domains added since (`game-fire`: `roomsystem/firehazard`).
+/// plus the filters of domains added since (`game-fire`: `roomsystem/firehazard`; the
+/// mission joins: `factions/factionreputation`, `missiondata/pu_missionlocality`,
+/// `missiongiver`).
 /// A ported domain's `filters()` must be a subset; a test checks the registry.
 pub const GOLDEN_EXTRACTION_FILTERS: &[&str] = &[
     "**/actor/actors/**",
@@ -53,6 +55,7 @@ pub const GOLDEN_EXTRACTION_FILTERS: &[&str] = &[
     "**/entities/scitem/ships/weapons/**",
     "**/entities/scitem/weapons/**",
     "**/entities/spaceships/**",
+    "**/factions/factionreputation/**",
     "**/globalcargoloadingparams/**",
     "**/globalquantumdriveparams/**",
     "**/globalshopparams/**",
@@ -65,6 +68,8 @@ pub const GOLDEN_EXTRACTION_FILTERS: &[&str] = &[
     "**/mining/**",
     "**/mission_entities/monitorzonejammer",
     "**/missionbroker/**",
+    "**/missiondata/pu_missionlocality/**",
+    "**/missiongiver/**",
     "**/refiningprocess/**",
     "**/reputation/**",
     "**/resourcetypedatabase/**",
