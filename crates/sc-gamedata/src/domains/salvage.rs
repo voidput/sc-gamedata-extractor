@@ -4,9 +4,16 @@
 //! Per-tool stats (scraper heads, modifiers) live on the items and are in
 //! `game-ship-components`. These two records hold the shared constants; most of their bulk
 //! is highlight colours and VFX tags, which are left out.
+//!
+//! `vehicles` lists the record names of the vehicles whose stock loadout carries a salvage
+//! head (the same rule as `game-ships` `loadout.salvageHeads` and `capabilities.salvage`);
+//! sc-telemetry's `salvage_classes` reads it.
 
+use crate::collate::locale_compare;
 use crate::domain::{Domain, DomainError, ParseContext, field};
-use crate::records::{GameRecord, at, num, ref_short_name};
+use crate::domains::ships::{carries_salvage_head, index_ship_items, is_vehicle_path};
+use crate::entity::component;
+use crate::records::{GameRecord, RecordSet, at, num, ref_short_name};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -71,6 +78,21 @@ pub fn parse_repair_beam(record: &GameRecord) -> RepairBeam {
     }
 }
 
+/// Record names of the vehicles whose stock loadout carries a salvage head, sorted.
+pub fn salvage_vehicles(records: &RecordSet) -> Vec<String> {
+    let items = index_ship_items(records);
+    let mut out: Vec<String> = records
+        .iter()
+        .filter(|r| is_vehicle_path(&r.record_path))
+        .filter(|r| component(r, "VehicleComponentParams").is_some())
+        .filter(|r| carries_salvage_head(r, &items))
+        .map(|r| r.name.clone())
+        .collect();
+    out.sort_by(|a, b| locale_compare(a, b));
+    out.dedup();
+    out
+}
+
 impl Domain for Salvage {
     fn name(&self) -> &'static str {
         "game-salvage"
@@ -87,7 +109,26 @@ impl Domain for Salvage {
         &[
             "**/vehiclesalvageglobalparams/**",
             "**/sglobalsalvagerepairbeamparams/**",
+            "**/entities/spaceships/**",
+            "**/entities/groundvehicles/**",
+            "**/entities/scitem/ships/**",
         ]
+    }
+
+    /// Entities only need what [`salvage_vehicles`] reads: the item type and, on vehicles,
+    /// the identity struct and stock loadout.
+    fn prune(&self, record: &mut GameRecord) {
+        if record.ty == "EntityClassDefinition" {
+            crate::entity::prune_entity(
+                &mut record.value,
+                &[],
+                &[
+                    ("SAttachableComponentParams", Some(&["AttachDef"])),
+                    ("VehicleComponentParams", Some(&[])),
+                    ("SEntityComponentDefaultLoadoutParams", None),
+                ],
+            );
+        }
     }
 
     fn parse(&self, ctx: &ParseContext<'_>) -> Result<Map<String, Value>, DomainError> {
@@ -106,10 +147,12 @@ impl Domain for Salvage {
         if let Some(b) = beam {
             field(&mut body, "repairBeam", &parse_repair_beam(b))?;
         }
+        let vehicles = salvage_vehicles(ctx.records);
+        field(&mut body, "vehicles", &vehicles)?;
         let count = usize::from(structural.is_some()) + usize::from(beam.is_some());
         body.insert(
             "summary".into(),
-            serde_json::json!({ "records": count }),
+            serde_json::json!({ "records": count, "vehicles": vehicles.len() }),
         );
         Ok(body)
     }
@@ -162,7 +205,8 @@ mod tests {
                                "disintegrateDissolveTime": 1.0},
                 "repairBeam": {"hitsPerSecond": 10.0, "hitDuration": 0.3, "hullThicknessMeters": 0.009,
                                "ammoToMaterialFactor": 100.0, "materialResource": "RMC"},
-                "summary": {"records": 2}
+                "vehicles": [],
+                "summary": {"records": 2, "vehicles": 0}
             })
         );
     }
@@ -174,6 +218,9 @@ mod tests {
         let body = DOMAIN
             .parse(&ParseContext::new(&set, &loc, &NoFiles))
             .unwrap();
-        assert_eq!(Value::Object(body), json!({"summary": {"records": 0}}));
+        assert_eq!(
+            Value::Object(body),
+            json!({"vehicles": [], "summary": {"records": 0, "vehicles": 0}})
+        );
     }
 }

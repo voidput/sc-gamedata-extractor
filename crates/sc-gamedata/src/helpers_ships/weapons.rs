@@ -296,7 +296,20 @@ pub fn parse_weapon(record: &GameRecord, ctx: &WeaponContext<'_>) -> Option<Weap
 
 /// `parseMissile`, reduced to name, size and damage.
 pub fn parse_missile(record: &GameRecord, localization: &Localization) -> Option<MissileSummary> {
-    let params = component(record, "SCItemMissileParams")?;
+    parse_explosive(record, localization, "SCItemMissileParams")
+}
+
+/// A bomb, read like a missile off its `SCItemBombParams`.
+pub fn parse_bomb(record: &GameRecord, localization: &Localization) -> Option<MissileSummary> {
+    parse_explosive(record, localization, "SCItemBombParams")
+}
+
+fn parse_explosive(
+    record: &GameRecord,
+    localization: &Localization,
+    params: &str,
+) -> Option<MissileSummary> {
+    let params = component(record, params)?;
     let def = def_of(record);
     let localized = localize(localization, at_map(def, "Localization.Name"));
     let placeholder = is_placeholder_name(localized);
@@ -415,5 +428,15 @@ mod tests {
         let m = parse_missile(&m, &loc).unwrap();
         assert_eq!(total_damage(m.damage.as_ref()), Some(3200.0));
         assert_eq!(m.name, "M");
+        let b = rec(
+            "B",
+            "EntityClassDefinition",
+            "p",
+            json!({"Components": [{"_Type_": "SCItemBombParams",
+                "explosionParams": {"damage": {"DamagePhysical": 22346, "DamageEnergy": 24356}}}]}),
+        );
+        assert!(parse_missile(&b, &loc).is_none());
+        let b = parse_bomb(&b, &loc).unwrap();
+        assert_eq!(total_damage(b.damage.as_ref()), Some(46702.0));
     }
 }

@@ -12,7 +12,9 @@
 //! ship item records and, for guns, their ammo.
 //!
 //! `totals` sums the loadout into the figures a patch is most likely to move: stock DPS,
-//! shield pool, power output, fuel, cargo and thrust.
+//! shield pool, power output, fuel, cargo and thrust. `totals.byStateEstimate` sums the
+//! stock components' resource-network draw and signatures per power state, and
+//! `fireParts` names the stock parts listed in `game-fire` (see [`ASSUMPTIONS`]).
 //!
 //! `capabilities` flags what the stock loadout and role let a vehicle do (mine, salvage,
 //! refuel, ...), by sc-telemetry's `derive_caps` rules (`sctelemetry/shipcaps.py`).
@@ -38,11 +40,14 @@
 use crate::collate::locale_compare;
 use crate::domain::{Domain, DomainError, ParseContext, field};
 use crate::domains::components::{Component, index_containers, parse_component};
+use crate::domains::fire::parse_fire_item;
 use crate::entity::{component, referenced_name, vec};
-use crate::helpers_ships::item_common::{attach_def, health_resistances};
+use crate::helpers_ships::item_common::{
+    ResourceProfile, attach_def, health_resistances, item_identity, resource_states,
+};
 use crate::helpers_ships::weapons::{
-    MissileSummary, WeaponContext, WeaponSummary, index_ammo, parse_missile, parse_weapon,
-    total_damage,
+    MissileSummary, WeaponContext, WeaponSummary, index_ammo, parse_bomb, parse_missile,
+    parse_weapon, total_damage,
 };
 use crate::helpers_ships::{at_map, number, round_to};
 use crate::localization::{LocRefs, Localization, is_placeholder_name, loc_refs, localize};
@@ -50,9 +55,15 @@ use crate::output::js_key_order;
 use crate::records::{GameRecord, RecordSet, array, at, num, str_};
 use serde::Serialize;
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub static DOMAIN: Ships = Ships;
+
+/// What `totals.byStateEstimate` and `fireParts` rest on that the records do not state.
+pub const ASSUMPTIONS: &[&str] = &[
+    "totals.byStateEstimate: per power state, the sum over the stock loadout's components (items in game-ship-components) of the resource-network Power and Coolant consumption (powerDraw, coolantDraw) and the EM / IR nominalSignature (em, ir). Every stock part is assumed to be in that state at once: Online is every part in its Online state (its first state when it has no Online, e.g. Idle); another key (Travelling, Transiting, ...) switches the parts that record that state to it and keeps the rest as in Online, and is left out when its sums equal Online's. How the game combines the parts (power allocation, signature falloff) is not stated.",
+    "fireParts: the stock radars, power plants, coolers, shields, quantum and jump drives, life support, batteries, fuel and quantum fuel tanks, missiles and bombs that game-fire lists with a health pool (MCsim build_fire.py's slots).",
+];
 
 pub struct Ships;
 
@@ -104,6 +115,12 @@ pub struct Vehicle {
     /// Power pips the ship can route to each item type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub power_pools: Option<Map<String, Value>>,
+    /// `DynamicPowerPool` entries: item type to the record's `maxItemCount` (-1 as recorded).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_power_pools: Option<Map<String, Value>>,
+    /// Stock loadout items listed in `game-fire` with health (see [`ASSUMPTIONS`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fire_parts: Option<Vec<String>>,
     pub capabilities: Capabilities,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_template: Option<bool>,
@@ -142,8 +159,8 @@ fn present(value: Option<&Value>) -> bool {
     }
 }
 
-/// `derive_caps` over a vehicle's role, stock loadout and totals. `game-salvage` names no
-/// vehicles, so `salvage` rests on the role alone.
+/// `derive_caps` over a vehicle's role, stock loadout and totals. `salvage` is the role or a
+/// stock salvage head (`loadout.salvageHeads`), the same vehicles `game-salvage` lists.
 pub fn derive_capabilities(
     role: Option<&str>,
     loadout: Option<&Map<String, Value>>,
@@ -164,7 +181,7 @@ pub fn derive_capabilities(
     let cargo = cargo_scu.is_some() || present(slot("cargoGrids"));
     Capabilities {
         mining: has_type("WeaponMining") || role.contains("mining"),
-        salvage: role.contains("salvage"),
+        salvage: role.contains("salvage") || present(slot("salvageHeads")),
         refuel: role.contains("refuel"),
         tractor: has_type("TractorBeam"),
         guns: has_type("WeaponGun") || present(slot("turrets")),
@@ -234,6 +251,11 @@ pub struct VehicleContext<'a> {
     pub components: HashMap<String, Component>,
     pub weapons: HashMap<String, WeaponSummary>,
     pub missiles: HashMap<String, MissileSummary>,
+    pub bombs: HashMap<String, MissileSummary>,
+    /// Resource-network states of the items that are components, when they have any.
+    pub states: HashMap<String, Vec<(String, ResourceProfile)>>,
+    /// Items `game-fire` lists with a health pool.
+    pub fire_parts: HashSet<String>,
 }
 
 /// `tidyClassifier`: `@vehicle_focus_combat` -> `combat`.
@@ -442,6 +464,113 @@ pub fn parse_power_pools(record: &GameRecord) -> Option<Map<String, Value>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// `DynamicPowerPool` entries: item type to `maxItemCount`, as recorded.
+pub fn parse_dynamic_power_pools(record: &GameRecord) -> Option<Map<String, Value>> {
+    let pools = component(record, "SItemPortContainerComponentParams")
+        .and_then(|c| at_map(c, "resourceNetworkPowerPools.itemPools"))?
+        .as_array()?;
+    let mut out = Map::new();
+    for pool in pools {
+        let ty = str_(at(pool, "itemType"));
+        let max = num(at(pool, "maxItemCount"));
+        if let (Some(ty), Some(max)) = (ty, max) {
+            out.insert(ty.to_string(), number(max));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Whether a vehicle's stock loadout carries a salvage head, by the rules [`parse_loadout`]
+/// files one under `salvageHeads`.
+pub fn carries_salvage_head(record: &GameRecord, items: &HashMap<String, &GameRecord>) -> bool {
+    let entries = loadout_entries(record);
+    let ty = |item: &str| {
+        items
+            .get(&item.to_lowercase())
+            .and_then(|r| str_(attach_def(r).get("Type")))
+    };
+    entries.iter().any(|e| {
+        ty(&e.item) == Some("SalvageHead")
+            && !e
+                .parent
+                .and_then(|p| ty(&entries[p].item))
+                .is_some_and(|t| GUN_TYPES.contains(&t))
+    })
+}
+
+/// Loadout lists `fireParts` reads, in MCsim `build_fire.py`'s order (bombs added).
+const FIRE_SLOTS: [&str; 12] = [
+    "radars",
+    "powerPlants",
+    "coolers",
+    "shields",
+    "quantumDrives",
+    "jumpDrives",
+    "lifeSupport",
+    "batteries",
+    "fuelTanks",
+    "quantumFuelTanks",
+    "missiles",
+    "bombs",
+];
+
+/// A part's state profile by name, else its default (`Online`, else its first state).
+fn state_or_default<'a>(
+    states: &'a [(String, ResourceProfile)],
+    name: &str,
+) -> Option<&'a ResourceProfile> {
+    let default = || {
+        states
+            .iter()
+            .find(|(n, _)| n == "Online")
+            .or_else(|| states.first())
+            .map(|(_, p)| p)
+    };
+    if name == "Online" {
+        return default();
+    }
+    states
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, p)| p)
+        .or_else(default)
+}
+
+/// `totals.byStateEstimate`: draw and signatures of the stock components per power state.
+fn by_state(parts: &[&[(String, ResourceProfile)]]) -> Option<Map<String, Value>> {
+    let mut names: Vec<&str> = vec!["Online"];
+    for states in parts {
+        let default = state_or_default(states, "Online");
+        for (n, p) in states.iter() {
+            if !names.contains(&n.as_str()) && !default.is_some_and(|d| std::ptr::eq(d, p)) {
+                names.push(n);
+            }
+        }
+    }
+    let mut out = Map::new();
+    for name in names {
+        let picked: Vec<&ResourceProfile> = parts
+            .iter()
+            .filter_map(|states| state_or_default(states, name))
+            .collect();
+        let total = |get: fn(&ResourceProfile) -> Option<f64>| {
+            sum(picked.iter().copied().map(get)).map(number)
+        };
+        let row = obj(vec![
+            ("powerDraw", total(|p| p.consumed("Power"))),
+            ("coolantDraw", total(|p| p.consumed("Coolant"))),
+            ("em", total(|p| p.em)),
+            ("ir", total(|p| p.ir)),
+        ]);
+        // Another state that sums to the same figures as Online says nothing new.
+        let same_as_online = name != "Online" && out.get("Online") == Some(&Value::Object(row.clone()));
+        if !row.is_empty() && !same_as_online {
+            out.insert(name.to_string(), Value::Object(row));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// What [`parse_loadout`] resolves.
 #[derive(Debug, Default)]
 pub struct Resolved {
@@ -449,6 +578,7 @@ pub struct Resolved {
     pub totals: Option<Map<String, Value>>,
     pub flight: Option<Flight>,
     pub armor: Option<Map<String, Value>>,
+    pub fire_parts: Option<Vec<String>>,
 }
 
 fn push(loadout: &mut Map<String, Value>, key: &str, item: Map<String, Value>) {
@@ -476,6 +606,7 @@ pub fn parse_loadout(record: &GameRecord, ctx: &VehicleContext<'_>) -> Resolved 
     let mut countermeasures = Map::new();
     let mut turrets = 0u32;
     let mut racks = 0u32;
+    let mut powered: Vec<&[(String, ResourceProfile)]> = Vec::new();
 
     let entries = loadout_entries(record);
     for entry in &entries {
@@ -496,6 +627,9 @@ pub fn parse_loadout(record: &GameRecord, ctx: &VehicleContext<'_>) -> Resolved 
         let sub_type = str_(def.get("SubType"));
         let key = item_record.short_name.to_lowercase();
         let comp = ctx.components.get(&key);
+        if let Some(states) = ctx.states.get(&key) {
+            powered.push(states);
+        }
         let base_name = comp
             .filter(|c| c.is_template.is_none())
             .map(|c| c.name.clone());
@@ -571,6 +705,49 @@ pub fn parse_loadout(record: &GameRecord, ctx: &VehicleContext<'_>) -> Resolved 
                             total_damage(missile.and_then(|m| m.damage.as_ref())).map(number),
                         ),
                     ]),
+                );
+            }
+            Some("Bomb") => {
+                let bomb = ctx.bombs.get(&key);
+                let name = bomb.map(|m| m.name.clone()).or_else(|| base_name.clone());
+                let size = bomb.and_then(|m| m.size).or(base_size);
+                push(
+                    &mut loadout,
+                    "bombs",
+                    base(vec![
+                        ("name", name.map(Value::String)),
+                        ("size", size.map(number)),
+                        ("rack", parent_item),
+                        (
+                            "damage",
+                            total_damage(bomb.and_then(|m| m.damage.as_ref())).map(number),
+                        ),
+                    ]),
+                );
+            }
+            Some("Battery") => push(&mut loadout, "batteries", base(vec![])),
+            Some(t @ ("SalvageHead" | "SalvageModifier" | "SalvageInternalStorage")) => {
+                let identity = item_identity(item_record, ctx.localization);
+                let name = base_name
+                    .clone()
+                    .or_else(|| identity.is_template.is_none().then_some(identity.name));
+                let (list, extra) = match t {
+                    "SalvageHead" => ("salvageHeads", ("mount", parent_item)),
+                    "SalvageModifier" => ("salvageModifiers", ("head", parent_item)),
+                    _ => (
+                        "salvageStorage",
+                        (
+                            "scu",
+                            num(component(item_record, "ResourceContainer")
+                                .and_then(|c| at_map(c, "capacity.standardCargoUnits")))
+                            .map(number),
+                        ),
+                    ),
+                };
+                push(
+                    &mut loadout,
+                    list,
+                    base(vec![("name", name.map(Value::String)), extra]),
                 );
             }
             Some("WeaponDefensive") => {
@@ -737,7 +914,44 @@ pub fn parse_loadout(record: &GameRecord, ctx: &VehicleContext<'_>) -> Resolved 
             "countermeasures",
             (!countermeasures.is_empty()).then(|| Value::Object(countermeasures.clone())),
         ),
+        ("bombs", count_of("bombs").map(number)),
+        (
+            "bombDamage",
+            sum(list("bombs")
+                .iter()
+                .map(|m| times(f(m, "damage"), f(m, "count"))))
+            .map(number),
+        ),
+        ("salvage", {
+            let row = obj(vec![
+                ("heads", count_of("salvageHeads").map(number)),
+                ("modifiers", count_of("salvageModifiers").map(number)),
+                (
+                    "storageScu",
+                    sum(list("salvageStorage")
+                        .iter()
+                        .map(|s| times(f(s, "scu"), f(s, "count"))))
+                    .map(number),
+                ),
+            ]);
+            (!row.is_empty()).then_some(Value::Object(row))
+        }),
+        ("byStateEstimate", by_state(&powered).map(Value::Object)),
     ]);
+
+    let mut fire_parts: Vec<String> = Vec::new();
+    for slot in FIRE_SLOTS {
+        for i in list(slot) {
+            let Some(item) = i.get("item").and_then(Value::as_str) else {
+                continue;
+            };
+            if ctx.fire_parts.contains(&item.to_lowercase())
+                && !fire_parts.iter().any(|p| p == item)
+            {
+                fire_parts.push(item.to_string());
+            }
+        }
+    }
 
     let armor = if armor_item.is_some() {
         parse_armor(armor_component)
@@ -749,6 +963,7 @@ pub fn parse_loadout(record: &GameRecord, ctx: &VehicleContext<'_>) -> Resolved 
         totals: Some(totals),
         flight,
         armor,
+        fire_parts: (!fire_parts.is_empty()).then_some(fire_parts),
     }
 }
 
@@ -815,6 +1030,8 @@ pub fn parse_vehicle(
         flight: resolved.flight,
         armor: resolved.armor,
         power_pools: parse_power_pools(record),
+        dynamic_power_pools: parse_dynamic_power_pools(record),
+        fire_parts: resolved.fire_parts,
         capabilities,
         is_template: placeholder.then_some(true),
     })
@@ -826,15 +1043,7 @@ pub fn build_vehicle_context<'a>(
     localization: &'a Localization,
     entities: &'a HashMap<String, &'a GameRecord>,
 ) -> VehicleContext<'a> {
-    let mut items: HashMap<String, &GameRecord> = HashMap::new();
-    for r in records.of_type("EntityClassDefinition") {
-        if r.record_path
-            .to_lowercase()
-            .contains("/entities/scitem/ships/")
-        {
-            items.insert(r.short_name.to_lowercase(), r);
-        }
-    }
+    let items = index_ship_items(records);
     let containers = index_containers(records);
     let weapon_ctx = WeaponContext {
         localization,
@@ -844,9 +1053,21 @@ pub fn build_vehicle_context<'a>(
     let mut components = HashMap::new();
     let mut weapons = HashMap::new();
     let mut missiles = HashMap::new();
+    let mut bombs = HashMap::new();
+    let mut states = HashMap::new();
+    let mut fire_parts = HashSet::new();
     for (key, record) in &items {
         if let Some(c) = parse_component(record, localization, Some(&containers)) {
             components.insert(key.clone(), c);
+            let s = resource_states(record);
+            if !s.is_empty() {
+                states.insert(key.clone(), s);
+            }
+        }
+        if parse_fire_item(record, localization)
+            .is_some_and(|f| f.health.is_some_and(|h| h != 0.0))
+        {
+            fire_parts.insert(key.clone());
         }
         if !record
             .record_path
@@ -859,6 +1080,10 @@ pub fn build_vehicle_context<'a>(
             missiles.insert(key.clone(), m);
             continue;
         }
+        if let Some(b) = parse_bomb(record, localization) {
+            bombs.insert(key.clone(), b);
+            continue;
+        }
         if let Some(w) = parse_weapon(record, &weapon_ctx) {
             weapons.insert(key.clone(), w);
         }
@@ -869,7 +1094,24 @@ pub fn build_vehicle_context<'a>(
         components,
         weapons,
         missiles,
+        bombs,
+        states,
+        fire_parts,
     }
+}
+
+/// Ship item records (under `/entities/scitem/ships/`) by lower-case short name.
+pub fn index_ship_items(records: &RecordSet) -> HashMap<String, &GameRecord> {
+    let mut items: HashMap<String, &GameRecord> = HashMap::new();
+    for r in records.of_type("EntityClassDefinition") {
+        if r.record_path
+            .to_lowercase()
+            .contains("/entities/scitem/ships/")
+        {
+            items.insert(r.short_name.to_lowercase(), r);
+        }
+    }
+    items
 }
 
 /// Every `EntityClassDefinition` by lower-case short name (a later duplicate wins).
@@ -880,7 +1122,7 @@ pub fn index_entities(records: &RecordSet) -> HashMap<String, &GameRecord> {
         .collect()
 }
 
-fn is_vehicle_path(path: &str) -> bool {
+pub fn is_vehicle_path(path: &str) -> bool {
     // `/\/entities\/(spaceships|groundvehicles)\//i`
     let lower = path.to_lowercase();
     lower.contains("/entities/spaceships/") || lower.contains("/entities/groundvehicles/")
@@ -973,6 +1215,7 @@ impl Domain for Ships {
             with_loadout: vehicles.iter().filter(|v| v.loadout.is_some()).count(),
         };
         let mut body = Map::new();
+        body.insert("_assumptions".into(), serde_json::json!(ASSUMPTIONS));
         field(&mut body, "vehicles", &vehicles)?;
         body.insert(
             "byManufacturer".into(),
@@ -1216,6 +1459,105 @@ mod tests {
             parse_power_pools(&ship).map(Value::Object),
             Some(json!({"WeaponGun": 4.0}))
         );
+        assert_eq!(
+            parse_dynamic_power_pools(&ship).map(Value::Object),
+            Some(json!({"Shield": 2.0}))
+        );
+    }
+
+    fn hyun() -> GameRecord {
+        record(
+            "GAMA_Hyun",
+            "libs/foundry/records/entities/spaceships/gama_hyun",
+            json!([
+                {"_Type_": "VehicleComponentParams", "vehicleName": "@vehicle_NameHyun", "vehicleRole": "Generalist"},
+                {"_Type_": "SEntityComponentDefaultLoadoutParams", "loadout": {"entries": [
+                    entry("hardpoint_power_plant", "POWR_Test", None),
+                    entry("hardpoint_salvage_arm_left", "Hyun_Salvage_Arm", Some(vec![
+                        entry("hardpoint_salvage_head_left", "salvage_head_standard.json", Some(vec![
+                            entry("hardpoint_salvage_subItem01", "Salvage_Modifier_Scraper_Medium", None)]))])),
+                    entry("hardpoint_salvage_arm_right", "Hyun_Salvage_Arm", Some(vec![
+                        entry("hardpoint_salvage_head_right", "salvage_head_standard.json", Some(vec![
+                            entry("hardpoint_salvage_subItem01", "Salvage_Modifier_Scraper_Medium", None)]))])),
+                    entry("hardpoint_internal_storage", "salvageinternalstorage_gama_hyun.json", None),
+                    entry("hardpoint_bomb_system", "BMBRCK_Test", Some(vec![
+                        entry("missile_01_attach", "bomb_s05_fski.json", None),
+                        entry("missile_02_attach", "bomb_s05_fski.json", None)]))
+                ]}}
+            ]),
+        )
+    }
+
+    fn hyun_records() -> RecordSet {
+        let state = |name: &str, power: f64, em: f64| json!({"name": name, "deltas": [
+            {"consumption": {"resource": "Power", "resourceAmountPerSecond": {"units": power}}},
+            {"consumption": {"resource": "Coolant", "resourceAmountPerSecond": {"units": 1}}}],
+            "signatureParams": {"EMSignature": {"nominalSignature": em}, "IRSignature": {"nominalSignature": 10}}});
+        RecordSet::new(vec![
+            hyun(),
+            ship_item("POWR_Test", "powerplant", "PowerPlant", "@x", vec![
+                json!({"_Type_": "ItemResourceComponentParams", "states": [state("Online", 2.0, 500.0), state("Travelling", 5.0, 500.0), state("Boost", 2.0, 500.0)]}),
+                json!({"_Type_": "SHealthComponentParams", "Health": 100, "DeathExplosionParams": {"damage": {"_Type_": "DamageInfo", "DamageThermal": 5}}}),
+            ]),
+            ship_item("Hyun_Salvage_Arm", "utility/salvage", "UtilityTurret", "@x", vec![]),
+            ship_item("Salvage_Head_Standard", "utility/salvage/salvagehead", "SalvageHead", "@item_NameBaler", vec![]),
+            ship_item("Salvage_Modifier_Scraper_Medium", "utility/salvage/salvagemodifiers", "SalvageModifier", "@x", vec![]),
+            ship_item("SalvageInternalStorage_GAMA_Hyun", "salvagemunching", "SalvageInternalStorage", "@x", vec![
+                json!({"_Type_": "ResourceContainer", "capacity": {"_Type_": "SStandardCargoUnit", "standardCargoUnits": 40}}),
+            ]),
+            ship_item("BMBRCK_Test", "missile_racks", "BombLauncher", "@x", vec![]),
+            ship_item("BOMB_S05_FSKI", "weapons/missiles", "Bomb", "@item_NameBomb", vec![
+                json!({"_Type_": "SCItemBombParams", "explosionParams": {"damage": {"_Type_": "DamageInfo", "DamagePhysical": 22346, "DamageEnergy": 24356}}}),
+                json!({"_Type_": "SHealthComponentParams", "Health": 10}),
+            ]),
+        ])
+    }
+
+    #[test]
+    fn salvage_bombs_power_states_and_fire_parts() {
+        let set = hyun_records();
+        let loc = parse_global_ini("item_NameBaler=Baler Salvage Head\nitem_NameBomb=Stormburst Bomb");
+        let entities = index_entities(&set);
+        let ctx = build_vehicle_context(&set, &loc, &entities);
+        let v = parse_vehicle(&hyun(), &loc, Some(&ctx)).unwrap();
+        let l = Value::Object(v.loadout.clone().unwrap());
+        assert_eq!(
+            l["salvageHeads"],
+            json!([{"item": "Salvage_Head_Standard", "name": "Baler Salvage Head", "size": 1.0,
+                "mount": "Hyun_Salvage_Arm", "count": 2.0}])
+        );
+        assert_eq!(
+            l["salvageModifiers"],
+            json!([{"item": "Salvage_Modifier_Scraper_Medium", "size": 1.0, "head": "salvage_head_standard", "count": 2.0}])
+        );
+        assert_eq!(
+            l["salvageStorage"],
+            json!([{"item": "SalvageInternalStorage_GAMA_Hyun", "size": 1.0, "scu": 40.0}])
+        );
+        assert_eq!(
+            l["bombs"],
+            json!([{"item": "BOMB_S05_FSKI", "name": "Stormburst Bomb", "size": 1.0, "rack": "BMBRCK_Test",
+                "damage": 46702.0, "count": 2.0}])
+        );
+        assert!(l.get("missiles").is_none() && l.get("weapons").is_none());
+        assert_eq!(l["missileRacks"], 1);
+        let t = Value::Object(v.totals.clone().unwrap());
+        assert_eq!(t["bombs"], 2.0);
+        assert_eq!(t["bombDamage"], 93404.0);
+        assert_eq!(t["salvage"], json!({"heads": 2.0, "modifiers": 2.0, "storageScu": 40.0}));
+        // Boost sums to Online's figures, so only Travelling is listed beside it.
+        assert_eq!(
+            t["byStateEstimate"],
+            json!({"Online": {"powerDraw": 2.0, "coolantDraw": 1.0, "em": 500.0, "ir": 10.0},
+                "Travelling": {"powerDraw": 5.0, "coolantDraw": 1.0, "em": 500.0, "ir": 10.0}})
+        );
+        assert_eq!(
+            v.fire_parts,
+            Some(vec!["POWR_Test".to_string(), "BOMB_S05_FSKI".to_string()])
+        );
+        assert!(v.capabilities.salvage, "a salvage head sets salvage whatever the role");
+        assert!(carries_salvage_head(&hyun(), &index_ship_items(&set)));
+        assert!(!carries_salvage_head(&gladius(), &index_ship_items(&records())));
     }
 
     #[test]
