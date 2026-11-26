@@ -603,6 +603,9 @@ impl Domain for ItemSources {
     fn name(&self) -> &'static str {
         "game-item-sources"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Loot spawn areas (spawn-point tags -> containers, racks, loose items, loot tables) and contract item awards."

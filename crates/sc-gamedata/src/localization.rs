@@ -518,8 +518,8 @@ pub mod redaction {
     }
 
     /// `redactProse`: a dataset as published, prose fields removed and listed in
-    /// `_redacted` (after `_build`). `None` for a dataset without prose fields, which is
-    /// published as is.
+    /// `_redacted` (after `_build` and `_schema`, which stay). `None` for a dataset
+    /// without prose fields, which is published as is.
     pub fn redact_prose(file: &str, dump: &Value) -> Option<Value> {
         let fields = prose_fields(file)?;
         let mut out = strip_fields(dump, fields);
@@ -543,15 +543,15 @@ pub mod redaction {
         let Value::Object(body) = out else {
             return Some(out);
         };
-        const HEAD: [&str; 3] = ["_source", "_extracted", "_build"];
+        const HEAD: [&str; 4] = ["_source", "_extracted", "_build", "_schema"];
         let mut published = Map::new();
         for k in HEAD {
             if let Some(v) = body.get(k) {
                 published.insert(k.to_string(), v.clone());
             }
         }
-        // `{ _source, _extracted, _build, _redacted, ...rest }`: a `_redacted` the dump
-        // already had comes back through `rest` and wins, in fourth place.
+        // `{ _source, _extracted, _build, _schema, _redacted, ...rest }`: a `_redacted` the
+        // dump already had comes back through `rest` and wins, right after the header.
         let own = body.get("_redacted").cloned();
         published.insert("_redacted".into(), own.unwrap_or(Value::Array(redacted)));
         for (k, v) in body {
@@ -623,7 +623,7 @@ pub mod redaction {
 
         fn fixtures() -> Vec<(&'static str, Value)> {
             let h = |body: Value| {
-                let mut v = json!({"_source": "test", "_extracted": "2026-11-23T00:00:00Z", "_build": "4.10.201.48085"});
+                let mut v = json!({"_source": "test", "_extracted": "2026-11-23T00:00:00Z", "_build": "4.10.201.48085", "_schema": "game-x@1"});
                 for (k, x) in body.as_object().unwrap() {
                     v[k] = x.clone();
                 }
@@ -719,8 +719,12 @@ pub mod redaction {
                 json!(["description", "rawDescription", "refinedDescription"])
             );
             let ships = get("game-ships.json");
-            let keys: Vec<&String> = ships.as_object().unwrap().keys().take(4).collect();
-            assert_eq!(keys, vec!["_source", "_extracted", "_build", "_redacted"]);
+            let keys: Vec<&String> = ships.as_object().unwrap().keys().take(5).collect();
+            assert_eq!(
+                keys,
+                vec!["_source", "_extracted", "_build", "_schema", "_redacted"]
+            );
+            assert_eq!(ships["_schema"], "game-x@1");
         }
 
         #[test]
@@ -750,7 +754,7 @@ pub mod redaction {
 
         #[test]
         fn string_table_reduces_to_name_keys() {
-            let dump = json!({"_source": "test", "_build": "4.10.201.48085",
+            let dump = json!({"_source": "test", "_build": "4.10.201.48085", "_schema": "game-strings-english@1",
                 "strings": {"item_NameGladius": "Gladius", "item_DescGladius": PROSE, "Dlg_hello": "Hi"}, "summary": {"total": 3}});
             let out = redact_dump(STRINGS_FILE, &dump);
             assert_eq!(out["strings"], json!({"item_NameGladius": "Gladius"}));
@@ -759,8 +763,16 @@ pub mod redaction {
             let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
             assert_eq!(
                 keys,
-                vec!["_source", "_build", "strings", "summary", "_redacted"]
+                vec![
+                    "_source",
+                    "_build",
+                    "_schema",
+                    "strings",
+                    "summary",
+                    "_redacted"
+                ]
             );
+            assert_eq!(out["_schema"], "game-strings-english@1");
         }
     }
 }

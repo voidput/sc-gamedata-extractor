@@ -860,6 +860,7 @@ pub const META_KEYS: &[&str] = &[
     "_source",
     "_extracted",
     "_build",
+    "_schema",
     "_redacted",
     "_assumptions",
     "summary",

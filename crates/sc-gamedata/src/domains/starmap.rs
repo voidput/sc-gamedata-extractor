@@ -443,6 +443,9 @@ impl Domain for Starmap {
     fn name(&self) -> &'static str {
         "game-starmap"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Star map locations with their hierarchy, jurisdiction and amenities."

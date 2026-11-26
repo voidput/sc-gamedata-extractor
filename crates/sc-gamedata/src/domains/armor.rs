@@ -215,6 +215,9 @@ impl Domain for Armor {
     fn name(&self) -> &'static str {
         "game-armor"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Personal armour, undersuits, helmets, backpacks and clothing with resistances, temperature range and storage."

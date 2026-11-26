@@ -362,6 +362,9 @@ impl Domain for Wikelo {
     fn name(&self) -> &'static str {
         "game-wikelo-trades"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Wikelo Emporium (TheCollector) barter trades and what each one asks for."

@@ -179,6 +179,9 @@ impl Domain for Attributes {
     fn name(&self) -> &'static str {
         "game-attributes"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Default option values and the console variable each drives, from Profiles/default/attributes.xml."

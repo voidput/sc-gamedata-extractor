@@ -638,6 +638,9 @@ impl Domain for Keybinds {
     fn name(&self) -> &'static str {
         "game-keybinds"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Default control bindings per action map and device, from defaultProfile.xml."

@@ -75,6 +75,9 @@ impl Domain for Salvage {
     fn name(&self) -> &'static str {
         "game-salvage"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Global salvage constants: structural fracture and the repair beam."

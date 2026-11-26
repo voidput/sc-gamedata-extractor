@@ -30,6 +30,7 @@ miniz_oxide = "0.9"
 # Gzipped snapshots (diff.rs).
 flate2.workspace = true
 ureq.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

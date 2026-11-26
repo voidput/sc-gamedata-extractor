@@ -921,6 +921,9 @@ impl Domain for Ships {
     fn name(&self) -> &'static str {
         "game-ships"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Ships and ground vehicles with manufacturer, role, crew, dimensions, hull resistances, stock loadout and its totals."

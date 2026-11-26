@@ -7,6 +7,9 @@ use serde_json::{Map, Value, json};
 
 /// Output name for English, the only language this port extracts.
 pub const NAME: &str = "game-strings-english";
+/// `_schema` version of every `game-strings-<language>` table (bump rule:
+/// [`crate::domain::Domain::schema_version`]).
+pub const SCHEMA_VERSION: u32 = 1;
 
 /// The dataset. With `redact`, cut to what `publish-dump.mjs` publishes (adds `_redacted`
 /// and `summary.published`); golden `data/` dumps are unredacted.
@@ -24,6 +27,10 @@ pub fn dataset(table: &Localization, extracted: &str, build: Option<&str>, redac
     if let Some(b) = build {
         out.insert("_build".into(), json!(b));
     }
+    out.insert(
+        "_schema".into(),
+        json!(output::schema_tag(NAME, SCHEMA_VERSION)),
+    );
     out.insert("language".into(), json!(language));
     let kept = if redact {
         redaction::redact(table)
@@ -65,11 +72,13 @@ mod tests {
                 "_source",
                 "_extracted",
                 "_build",
+                "_schema",
                 "language",
                 "strings",
                 "summary"
             ]
         );
+        assert_eq!(v["_schema"], "game-strings-english@1");
         assert_eq!(v["summary"]["strings"], 2);
         let r = dataset(&t, "t", None, true);
         assert_eq!(r["strings"], json!({"vehicle_NameX": "X"}));

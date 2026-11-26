@@ -389,6 +389,9 @@ impl Domain for Blueprints {
     fn name(&self) -> &'static str {
         "game-blueprints"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Crafting blueprints with their recipe costs, craft times, item names and the missions that award them."

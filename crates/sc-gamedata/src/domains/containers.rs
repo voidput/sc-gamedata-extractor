@@ -125,6 +125,9 @@ impl Domain for Containers {
     fn name(&self) -> &'static str {
         "game-containers"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Cargo grids and inventory containers with their dimensions and capacity."

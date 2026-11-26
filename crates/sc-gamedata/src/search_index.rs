@@ -7,7 +7,7 @@
 //! and removes it when either is missing, so a stale index never sits beside new data;
 //! [`write_search_index`] does the same.
 //!
-//! Shape (format 1): `{ _source, _build, format, columns, makers, types, items, ships }`,
+//! Shape (format 1): `{ _source, _build, _schema, format, columns, makers, types, items, ships }`,
 //! rows `[key, name, maker, type, family, noise]` with trailing zeros trimmed: `name` is 0
 //! when it equals `key`, `maker`/`type` are 1-based indices into `makers`/`types` (0 for
 //! none), `family` is the weapon family or 0, `noise` 1 for an entry the default list
@@ -27,6 +27,9 @@ pub const NAME: &str = "game-search-index";
 pub const FILE: &str = "game-search-index.json";
 /// `SEARCH_INDEX_FORMAT`.
 pub const FORMAT: u64 = 1;
+/// `_schema` version (`game-search-index@1`; bump rule:
+/// [`crate::domain::Domain::schema_version`]).
+pub const SCHEMA_VERSION: u32 = 1;
 const COLUMNS: [&str; 6] = ["key", "name", "maker", "type", "family", "noise"];
 const SOURCE: &str =
     "Derived from game-item-tags.json and game-ships.json (see src/search-index.ts)";
@@ -367,6 +370,10 @@ pub fn serialize(doc: &SearchIndexDoc) -> String {
     if let Some(b) = &doc.build {
         fields.push(format!("\"_build\": {}", s(b.clone())));
     }
+    fields.push(format!(
+        "\"_schema\": {}",
+        s(Value::from(crate::output::schema_tag(NAME, SCHEMA_VERSION)))
+    ));
     fields.push(format!("\"format\": {}", doc.format));
     fields.push(format!("\"columns\": {}", s(Value::from(COLUMNS.to_vec()))));
     fields.push(format!(
@@ -499,6 +506,7 @@ mod tests {
     fn survives_a_round_trip_through_the_file_encoding() {
         let parsed: Value = serde_json::from_str(&serialize(&doc())).unwrap();
         assert_eq!(parsed["_build"], "4.10.0.1");
+        assert_eq!(parsed["_schema"], "game-search-index@1");
         assert_eq!(
             load_search_index_entries(&parsed, true).unwrap(),
             build_entries(&items(), &ships(), true)
@@ -545,7 +553,7 @@ mod tests {
         let d = build_search_index(&[], &[], None);
         assert_eq!(
             serialize(&d),
-            "{\n\"_source\": \"Derived from game-item-tags.json and game-ships.json (see src/search-index.ts)\",\n\"format\": 1,\n\"columns\": [\"key\",\"name\",\"maker\",\"type\",\"family\",\"noise\"],\n\"makers\": [],\n\"types\": [],\n\"items\": [],\n\"ships\": []\n}\n"
+            "{\n\"_source\": \"Derived from game-item-tags.json and game-ships.json (see src/search-index.ts)\",\n\"_schema\": \"game-search-index@1\",\n\"format\": 1,\n\"columns\": [\"key\",\"name\",\"maker\",\"type\",\"family\",\"noise\"],\n\"makers\": [],\n\"types\": [],\n\"items\": [],\n\"ships\": []\n}\n"
         );
         let text = serialize(&doc());
         assert!(

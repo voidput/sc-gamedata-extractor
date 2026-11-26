@@ -684,6 +684,9 @@ impl Domain for Commodities {
     fn name(&self) -> &'static str {
         "game-commodities"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Resource types with density and refined form, commodity cargo items, and cargo damage."

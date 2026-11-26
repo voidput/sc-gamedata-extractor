@@ -810,6 +810,9 @@ impl Domain for Weapons {
     fn name(&self) -> &'static str {
         "game-weapons"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Combat baseline: ship and FPS weapons joined to their ammo (DPS, alpha, rate, range, power, EM, HP) plus missiles."

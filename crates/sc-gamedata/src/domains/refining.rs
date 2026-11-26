@@ -165,6 +165,9 @@ impl Domain for Refining {
     fn name(&self) -> &'static str {
         "game-refining"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Refining methods, raw-to-refined resource pairs, and refining quality settings."

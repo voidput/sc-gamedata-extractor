@@ -103,6 +103,11 @@ pub enum DomainError {
 pub trait Domain: Sync {
     /// Output base name, `game-manufacturers`.
     fn name(&self) -> &'static str;
+    /// The `<n>` of the header's `_schema: "<name>@<n>"`, declared by each domain (no
+    /// default, so the number lives in the domain's own file). Bump it when a field is
+    /// removed, renamed or retyped, or its meaning changes; adding an optional field does
+    /// not bump (readers ignore unknown keys).
+    fn schema_version(&self) -> u32;
     fn description(&self) -> &'static str;
     fn filters(&self) -> &'static [&'static str];
     /// Archive file globs the TypeScript extracts as-is (`files`).

@@ -99,6 +99,9 @@ impl Domain for Manufacturers {
     fn name(&self) -> &'static str {
         "game-manufacturers"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Manufacturer codes and display names."

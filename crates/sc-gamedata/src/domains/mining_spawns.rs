@@ -609,6 +609,9 @@ impl Domain for MiningSpawns {
     fn name(&self) -> &'static str {
         "game-mining-spawns"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Which ores spawn where, resolved from provider presets through to compositions."

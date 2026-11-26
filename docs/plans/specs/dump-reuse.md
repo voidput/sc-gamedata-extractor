@@ -57,6 +57,28 @@ Extend the existing file; there is no separate `manifest.json`.
 - Parity: the JS `buildManifest` and Rust `build_manifest` stay byte-identical. Extend the
   existing `build_manifest_matches_script` test.
 
+#### Built (2026-11-25)
+
+- Rust only; the JS `buildManifest` is gone with the TS pipeline, so the parity item is void.
+  `crates/sc-gamedata/src/publish.rs`: `build_manifest(build, origin, patch, extractor,
+  files)` writes `{build, channel, patch, branch, extractor: {commit[, dirty: true]}, files:
+  [{name, sha256, bytes, schema}]}` (two-space indent, trailing newline, no timestamp).
+- `extractor_of(root)`: `git rev-parse HEAD` of the publishing checkout (`PublishOptions::root`)
+  and `dirty` when `git status --porcelain --untracked-files=no` lists anything. `plan` fails
+  when the root is not a git checkout. The dry run prints an `Extractor:` line, flagging a dirty
+  tree.
+- `stage` writes `data/` first, hashes each file from the bytes it writes (`ManifestFile::of`,
+  `sha2`), then writes `build.json`, so the manifest is in the commit and every hash is its
+  blob's. An identical republish still stops at "Nothing to republish".
+- `publish --gh-script` appends, after the create/edit steps, `cd <dumps checkout>` and
+  `gh release upload <tag> build.json --clobber -R <repo>`, guarded by the checkout's HEAD
+  being the tag (after an "already published" stop, main may hold a later build). Without
+  `--gh-script` the command is printed with the others.
+- Verified on LIVE 4.10.201.48085, staged into a local bare clone of the dumps repo with a stub
+  `gh`: 33 files listed, sorted, the same set as `data/game-*.json` in the tag, every
+  `sha256`/`bytes`/`schema` equal to its `git cat-file` blob, and the uploaded asset's sha256
+  equal to the tag's `build.json` blob.
+
 ### B. `_schema` per dataset
 
 - Each TS domain declares `schemaVersion` (starting at 1). `pipeline.ts` stamps
@@ -69,6 +91,26 @@ Extend the existing file; there is no separate `manifest.json`.
   fails when the shape changes without a bump, or without an updated snapshot.
 - Redacted files keep the same `_schema`. The app reads `_redacted` (already set by
   `redactProse`) to see which fields were removed.
+
+#### Built (2026-11-25)
+
+- Rust only (no TS domains remain). `Domain::schema_version()` is a required trait method, so
+  each domain file holds its own number (`1` everywhere now) and a bump is a one-line change
+  there. `pipeline::run` stamps `_schema` through `output::envelope`, right after `_build`
+  (after `_extracted` when there is no build).
+- Outside the registry: `strings::SCHEMA_VERSION` (`game-strings-<language>@1`),
+  `search_index::SCHEMA_VERSION` (`game-search-index@1`) and `item_obtain::SCHEMA_VERSION`
+  (`game-item-obtain@1`), each placed after `_build`.
+- Redaction keeps `_schema` in the header (`redact_prose` puts it before `_redacted`;
+  `redact_strings` leaves it in place). `diff::META_KEYS` lists it, so notes never diff it.
+- Bump rule, for every dataset above: bump `<n>` when a field is removed, renamed or retyped, or
+  its meaning changes (units, scale, what a count counts). Adding an optional field does not
+  bump. Bump in the same change as the shape change.
+- Test: `pipeline::tests::every_domain_stamps_its_schema_after_build` runs every registered
+  domain and checks `_schema == "<file stem>@<schema_version>"` in fourth place.
+- `compare.rs` does not special-case `_schema`, so a golden from before this change differs by
+  that one key. The shape-hash guard is not built.
+- LIVE 4.10.201.48085: all 33 `game-*.json` files carry `_schema` right after `_build`.
 
 ### C. `game-npc-loadouts`
 

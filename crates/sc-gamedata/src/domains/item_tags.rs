@@ -229,6 +229,9 @@ impl Domain for ItemTagsDomain {
     fn name(&self) -> &'static str {
         "game-item-tags"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Every item's tag paths, the join between items and tag-driven loot."

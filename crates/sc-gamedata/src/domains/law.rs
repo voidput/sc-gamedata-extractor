@@ -228,6 +228,9 @@ impl Domain for Law {
     fn name(&self) -> &'static str {
         "game-law"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Crimes with their penalties, and jurisdictions with fines, prohibited goods and impound rules."

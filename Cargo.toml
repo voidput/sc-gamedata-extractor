@@ -28,6 +28,8 @@ rayon = "1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # HTTP for `sc-gamedata fetch` (UEX) and `overlays fetch`: rustls + webpki roots, no native TLS.
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+# sha256 of each published file in the dumps' build.json (publish.rs).
+sha2 = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
