@@ -90,6 +90,14 @@ impl ResourceProfile {
             .find(|(k, _)| k == resource)
             .map(|(_, v)| *v)
     }
+
+    pub fn consumed(&self, resource: &str) -> Option<f64> {
+        self.consumption
+            .as_ref()?
+            .iter()
+            .find(|(k, _)| k == resource)
+            .map(|(_, v)| *v)
+    }
 }
 
 fn rate_of(value: Option<&Value>) -> Option<f64> {
@@ -113,10 +121,28 @@ pub fn resource_profile(record: &GameRecord) -> ResourceProfile {
         .iter()
         .find(|s| s.get("name").and_then(Value::as_str) == Some("Online"))
         .or_else(|| states.first());
-    let Some(state) = online.filter(|s| s.is_object()) else {
-        return ResourceProfile::default();
-    };
+    match online.filter(|s| s.is_object()) {
+        Some(state) => state_profile(state),
+        None => ResourceProfile::default(),
+    }
+}
 
+/// Every named resource-network state of an item with its profile, in record order (a
+/// quantum drive's `Online` and `Travelling`).
+pub fn resource_states(record: &GameRecord) -> Vec<(String, ResourceProfile)> {
+    let resources = component(record, "ItemResourceComponentParams");
+    array(resources.and_then(|r| r.get("states")))
+        .iter()
+        .filter(|s| s.is_object())
+        .filter_map(|s| {
+            let name = str_(s.get("name")).filter(|n| !n.is_empty())?;
+            Some((name.to_string(), state_profile(s)))
+        })
+        .collect()
+}
+
+/// Draw, output and signatures of one resource-network state.
+fn state_profile(state: &Value) -> ResourceProfile {
     let mut generation = Vec::new();
     let mut consumption = Vec::new();
     for delta in array(state.get("deltas")) {
