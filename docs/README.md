@@ -48,6 +48,7 @@ Plain-markdown index. Obsidian index: [Home.md](Home.md).
 - [game-mining](datasets/game-mining.md) — The physics of breaking rock, per mineable element
 - [game-missions](datasets/game-missions.md) — Every `MissionBrokerEntry` record, the contracts the mobiGlas contract manager offers
 - [game-npc-loadouts](datasets/game-npc-loadouts.md) — What each NPC type (actor) can spawn wearing and wielding, which is what its body can be looted for…
+- [game-paints](datasets/game-paints.md) — Every ship paint and the vehicles it fits, by the game's port tag rule
 - [game-quantum](datasets/game-quantum.md) — The global quantum-travel rules every quantum drive obeys
 - [game-refining](datasets/game-refining.md) — What the client knows about refining
 - [game-reputation](datasets/game-reputation.md) — Every reputation rank (`SReputationStandingParams` record)

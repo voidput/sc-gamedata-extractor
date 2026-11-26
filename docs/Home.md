@@ -48,6 +48,7 @@ Vault index (Obsidian). Plain-link twin: [README.md](README.md).
 - [[game-mining]] — ([open](datasets/game-mining.md)) — The physics of breaking rock, per mineable element
 - [[game-missions]] — ([open](datasets/game-missions.md)) — Every `MissionBrokerEntry` record, the contracts the mobiGlas contract manager offers
 - [[game-npc-loadouts]] — ([open](datasets/game-npc-loadouts.md)) — What each NPC type (actor) can spawn wearing and wielding, which is what its body can be looted for…
+- [[game-paints]] — ([open](datasets/game-paints.md)) — Every ship paint and the vehicles it fits, by the game's port tag rule
 - [[game-quantum]] — ([open](datasets/game-quantum.md)) — The global quantum-travel rules every quantum drive obeys
 - [[game-refining]] — ([open](datasets/game-refining.md)) — What the client knows about refining
 - [[game-reputation]] — ([open](datasets/game-reputation.md)) — Every reputation rank (`SReputationStandingParams` record)

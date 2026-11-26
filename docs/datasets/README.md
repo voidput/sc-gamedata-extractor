@@ -35,7 +35,7 @@ Every dataset is a JSON object. A few underscore keys come first, followed by it
 | `_build` | string | all 33 | The game build. It equals the tag; sc-telemetry and snares check this. |
 | `_schema` | string `"<dataset>@1"` | all 33 | Comes right after `_build` (since tags 4.10.201.48085 / 5.0.202.35026). The part before `@` is the file stem, and the number is bumped only on a breaking change ([consumer-datasets](../plans/specs/consumer-datasets.md)). |
 | `_redacted` | string[] or string | published files that strip something | The prose fields publish removed, or for game-strings-english a note that the table keeps name keys only. Not present in the parse output. |
-| `_assumptions` | string[] | game-commodities (1), game-item-obtain (5), game-mining-spawns (4), game-npc-loadouts (1) | Plain-language statements of what the derived numbers in that file assume, because the records do not state it. |
+| `_assumptions` | string[] | game-commodities (1), game-item-obtain (5), game-mining-spawns (4), game-npc-loadouts (1), game-paints (4) | Plain-language statements of what the derived numbers in that file assume, because the records do not state it. |
 
 ## Redaction
 
@@ -66,6 +66,7 @@ The others read game records, and some of them **share parse code or records** w
 | game-commodities | game-mining-spawns | `minedAs` from `mined_elements` |
 | game-refining | game-commodities | The same resource database; `refinables` is the subset with `refinesTo` |
 | game-starmap | game-law | Both load the `Jurisdiction` records, so the names match |
+| game-paints | game-ships, game-manufacturers | Vehicles and their names through `is_vehicle_path` / `parse_vehicle`; manufacturer codes through `names_by_code` |
 | game-cargo | game-shops | `box_sizes` |
 | game-attributes | game-keybinds | `read_profile_file` (both are profile XML, not DataCore) |
 | every localised domain | game-strings-english | The same `global.ini` table, read from the archive rather than from the published file |
@@ -107,6 +108,7 @@ Who reads which file, from the consumer repos (read-only grep, file:line evidenc
 | game-mining-spawns | | | | | ● | ● | query |
 | game-missions | | | | | ● | ● | |
 | game-npc-loadouts | | | | | | ● | |
+| game-paints | | | | | | | |
 | game-quantum | ● | | | | | ● | |
 | game-refining | | | | | g | ● | |
 | game-reputation | | | | | ● | ● | |
@@ -149,6 +151,7 @@ Sizes are published bytes at `4.10.201.48085`, from that tag's `build.json` (whi
 | [game-mining-spawns](game-mining-spawns.md) | 856,336 | Where ores spawn, walked from provider presets down to rock compositions |
 | [game-missions](game-missions.md) | 1,198,085 | 2,584 contract-manager entries: giver, type, payout, buy-in |
 | [game-npc-loadouts](game-npc-loadouts.md) | 2,673,263 | What 2,312 NPC types wear and wield, with estimated chances |
+| [game-paints](game-paints.md) | not published (local parse 2,913,411) | 1,042 ship paints and the vehicles each fits, by the paint port's tag rule |
 | [game-quantum](game-quantum.md) | 469 | Global quantum-travel rules (start altitude, party range, spline constants) |
 | [game-refining](game-refining.md) | 9,287 | 9 refining methods and 30 raw-to-refined pairs; yields are server-side |
 | [game-reputation](game-reputation.md) | 196,552 | 380 reputation ranks in 239 groups, with thresholds and drift |

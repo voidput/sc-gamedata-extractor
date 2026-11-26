@@ -1379,6 +1379,7 @@ const TS_ORDER: &[&str] = &[
     "game-keybinds",
     "game-attributes",
     "game-npc-loadouts",
+    "game-paints",
 ];
 
 /// Every registered domain, in `pipeline.ts` order (any the order misses go last).

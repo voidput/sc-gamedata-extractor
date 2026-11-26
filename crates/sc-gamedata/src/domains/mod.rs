@@ -74,6 +74,8 @@ registry! {
 
     npc_loadouts, // Rust only (starorg-codex npc_loadouts.rs)
 
+    paints, // Rust only (paint items and the vehicles their tags fit)
+
     quantum, // quantum.ts
 
     refining, // refining.ts
