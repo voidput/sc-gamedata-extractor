@@ -330,13 +330,16 @@ pub fn release_title(build: &str, origin: &Origin, patch: Option<&str>) -> Strin
 }
 
 /// `build.json` at the dumps root: the per-tag manifest the fan-out workflow and the
-/// starorg-codex dump reader read. `{build, channel, patch, branch, extractor: {commit[,
-/// dirty]}, files: [{name, sha256, bytes, schema}]}`, `files` sorted by name; two-space
-/// indent, trailing newline. No timestamp, so an identical republish stays identical.
+/// starorg-codex dump reader read. `{build, channel, patch, branch, revision, extractor:
+/// {commit[, dirty]}, files: [{name, sha256, bytes, schema}]}`, `files` sorted by name;
+/// two-space indent, trailing newline. No timestamp, so an identical republish stays
+/// identical. `revision` is 1 on the first publish of a build and one more on each
+/// republish, so a reader that cached a tag can tell when the tag moved.
 pub fn build_manifest(
     build: &str,
     origin: &Origin,
     patch: Option<&str>,
+    revision: u32,
     extractor: &Extractor,
     files: &[ManifestFile],
 ) -> String {
@@ -367,9 +370,37 @@ pub fn build_manifest(
     m.insert("channel".into(), text(Some(&origin.channel)));
     m.insert("patch".into(), text(patch));
     m.insert("branch".into(), text(origin.branch.as_deref()));
+    m.insert("revision".into(), Value::from(revision));
     m.insert("extractor".into(), Value::Object(ext));
     m.insert("files".into(), Value::Array(entries));
     format!("{}\n", to_js_json(&Value::Object(m)))
+}
+
+/// The annotated tag that pins one revision of a build: `<build>-r<n>`. It never moves,
+/// unlike `<build>`, and the tool readers' tag patterns (bare build strings) skip it.
+pub fn revision_tag(build: &str, revision: u32) -> String {
+    format!("{build}-r{revision}")
+}
+
+/// The revision the checkout's tag of `build` holds: its `build.json` `revision`, else
+/// (tags published before the field existed) the number of publish commits for the build
+/// in the checkout's history, `<build>` and `<build> (republished)`, at least 1.
+fn published_revision(work_dir: &Path, build: &str) -> u32 {
+    let recorded = git(work_dir, &["show", &format!("{build}:build.json")])
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("revision").and_then(Value::as_u64))
+        .map(|r| r as u32);
+    if let Some(r) = recorded {
+        return r;
+    }
+    let republished = format!("{build} (republished)");
+    let count = git(work_dir, &["log", "--format=%s", build])
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| *l == build || *l == republished)
+        .count() as u32;
+    count.max(1)
 }
 
 /// `releaseFlags`: `--prerelease` for test channels, `--latest` only for LIVE.
@@ -810,6 +841,11 @@ pub fn stage(plan: &PublishPlan, work_dir: &Path, push: bool) -> Result<StageOut
         files.push(ManifestFile::of(&d.file, text.as_bytes(), schema));
     }
     // After the data, from the bytes just written, so every hash matches its blob.
+    let revision = if existing {
+        published_revision(work_dir, build) + 1
+    } else {
+        1
+    };
     let manifest = work_dir.join("build.json");
     std::fs::write(
         &manifest,
@@ -817,6 +853,7 @@ pub fn stage(plan: &PublishPlan, work_dir: &Path, push: bool) -> Result<StageOut
             build,
             &plan.origin,
             plan.patch.as_deref(),
+            revision,
             &plan.extractor,
             &files,
         ),
@@ -871,6 +908,20 @@ pub fn stage(plan: &PublishPlan, work_dir: &Path, push: bool) -> Result<StageOut
     } else if git(work_dir, &["tag", "--list", build])?.is_empty() {
         git(work_dir, &["tag", "-a", build, "-m", build])?;
     }
+    // The revision's own tag, which never moves.
+    let rev_tag = revision_tag(build, revision);
+    if git(work_dir, &["tag", "--list", &rev_tag])?.is_empty() {
+        git(
+            work_dir,
+            &[
+                "tag",
+                "-a",
+                &rev_tag,
+                "-m",
+                &format!("{build} revision {revision}"),
+            ],
+        )?;
+    }
 
     if push {
         let branch = git(work_dir, &["rev-parse", "--abbrev-ref", "HEAD"])?;
@@ -888,6 +939,10 @@ pub fn stage(plan: &PublishPlan, work_dir: &Path, push: bool) -> Result<StageOut
         } else {
             git(work_dir, &["push", "origin", build])?;
         }
+        git(
+            work_dir,
+            &["push", "origin", &format!("refs/tags/{rev_tag}")],
+        )?;
     }
     Ok(StageOutcome::Staged {
         republished: existing,
@@ -926,12 +981,13 @@ mod tests {
             "5.0.202.35026",
             &origin("PTU", Some("sc-alpha-5.0.0")),
             None,
+            1,
             &clean("0123abc"),
             &files,
         );
         assert_eq!(
             text,
-            "{\n  \"build\": \"5.0.202.35026\",\n  \"channel\": \"PTU\",\n  \"patch\": \"5.0.0\",\n  \"branch\": \"sc-alpha-5.0.0\",\n  \"extractor\": {\n    \"commit\": \"0123abc\"\n  },\n  \"files\": [\n    {\n      \"name\": \"data/game-ammo.json\",\n      \"sha256\": \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\n      \"bytes\": 3\n    },\n    {\n      \"name\": \"data/game-ships.json\",\n      \"sha256\": \"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\n      \"bytes\": 2,\n      \"schema\": \"game-ships@1\"\n    }\n  ]\n}\n"
+            "{\n  \"build\": \"5.0.202.35026\",\n  \"channel\": \"PTU\",\n  \"patch\": \"5.0.0\",\n  \"branch\": \"sc-alpha-5.0.0\",\n  \"revision\": 1,\n  \"extractor\": {\n    \"commit\": \"0123abc\"\n  },\n  \"files\": [\n    {\n      \"name\": \"data/game-ammo.json\",\n      \"sha256\": \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\n      \"bytes\": 3\n    },\n    {\n      \"name\": \"data/game-ships.json\",\n      \"sha256\": \"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\n      \"bytes\": 2,\n      \"schema\": \"game-ships@1\"\n    }\n  ]\n}\n"
         );
         let v: Value = serde_json::from_str(&text).unwrap();
         assert!(v["extractor"].get("dirty").is_none());
@@ -943,11 +999,13 @@ mod tests {
             "1.0.191.55227",
             &origin("HOTFIX", None),
             Some("1.0.2"),
+            3,
             &dirty,
             &[],
         ))
         .unwrap();
         assert_eq!(v["patch"], "1.0.2");
+        assert_eq!(v["revision"], 3);
         assert_eq!(v["branch"], Value::Null);
         assert_eq!(v["extractor"], json!({"commit": "c", "dirty": true}));
         assert_eq!(v["files"], json!([]));
@@ -955,6 +1013,7 @@ mod tests {
             "b",
             &origin("LIVE", None),
             None,
+            1,
             &clean("c"),
             &[],
         ))
@@ -962,8 +1021,8 @@ mod tests {
         assert_eq!(v["patch"], Value::Null);
         // Same inputs, same bytes: no timestamp.
         assert_eq!(
-            build_manifest("b", &origin("LIVE", None), None, &clean("c"), &files),
-            build_manifest("b", &origin("LIVE", None), None, &clean("c"), &files)
+            build_manifest("b", &origin("LIVE", None), None, 1, &clean("c"), &files),
+            build_manifest("b", &origin("LIVE", None), None, 1, &clean("c"), &files)
         );
     }
 
@@ -1237,11 +1296,44 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        // Revision 1, pinned by its own tag at the same commit.
+        assert_eq!(manifest["revision"], 1);
+        assert_eq!(
+            git(&work, &["rev-parse", "1.0.2-r1^{commit}"]).unwrap(),
+            git(&work, &["rev-parse", "1.0.2^{commit}"]).unwrap()
+        );
         // A second run finds the tag.
         assert_eq!(
             stage(&p, &work, false).unwrap(),
             StageOutcome::AlreadyPublished
         );
+        // A republish with changed data moves `1.0.2`, writes revision 2, and leaves
+        // `1.0.2-r1` where it was.
+        let r1 = git(&work, &["rev-parse", "1.0.2-r1^{commit}"]).unwrap();
+        let mut again = p.clone();
+        again.republish = true;
+        let weapons = again
+            .dumps
+            .iter_mut()
+            .find(|d| d.file == "game-weapons.json")
+            .unwrap();
+        weapons.parsed["shipWeapons"][0]["dps"] = json!(126);
+        assert!(matches!(
+            stage(&again, &work, false).unwrap(),
+            StageOutcome::Staged {
+                republished: true,
+                ..
+            }
+        ));
+        let m2: Value =
+            serde_json::from_str(&git(&work, &["show", "1.0.2:build.json"]).unwrap()).unwrap();
+        assert_eq!(m2["revision"], 2);
+        assert_eq!(git(&work, &["rev-parse", "1.0.2-r1^{commit}"]).unwrap(), r1);
+        assert_eq!(
+            git(&work, &["rev-parse", "1.0.2-r2^{commit}"]).unwrap(),
+            git(&work, &["rev-parse", "1.0.2^{commit}"]).unwrap()
+        );
+        assert_ne!(r1, git(&work, &["rev-parse", "1.0.2^{commit}"]).unwrap());
         // A tracked change makes the extractor dirty; an untracked file does not.
         std::fs::write(root.join("untracked.txt"), "y").unwrap();
         assert!(!extractor_of(root).unwrap().dirty);

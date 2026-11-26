@@ -238,6 +238,24 @@ following.
    - also commodities, manufacturers, missions, refining and starmap, which are blocked only
      by point 2.
 
+### F. Revisions instead of silent tag moves (2026-11-25)
+
+The starorg-codex session asked that a dataset cached from a tag never silently differ from
+what the tag holds. The tag stays the game build string, because consumers key on it, so a
+republish still moves `<build>`, but:
+- **`build.json` `revision`:** 1 on the first publish of a build, one more on each republish.
+  The value is read from the tag's existing `build.json`. For tags published before the field
+  existed, it is the number of publish commits for that build in the dumps history (4.10.201
+  and 5.0.202 had two each, so their next revision is 3). Readers stamp tag plus revision, and
+  re-fetch when it changes.
+- **`<build>-r<n>`:** an annotated tag per revision, pushed with it. It never moves, so every
+  revision stays addressable. The tool readers' tag pattern (`^\d+(\.\d+){2,3}$`) and the
+  notes' previous-build lookup skip it.
+- `build.json` hashes are always computed from the bytes written in the same publish.
+  sc-telemetry relies on that: it treats a local file as current only when its sha256 matches.
+- Built in `publish.rs` (`revision_tag`, `published_revision`); the sandbox test republishes and
+  checks that `-r1` stays put while `-r2` and the build tag share the new commit.
+
 ## Order
 
 D (after merge) → A → B → C. The app works from D alone, by shape. A lets it verify each file.

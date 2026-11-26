@@ -802,9 +802,12 @@ fn tool_repos() -> Vec<String> {
 fn dispatch_block(plan: &publish::PublishPlan, repos: &[String]) -> String {
     let channel = plan.origin.channel.as_str();
     if channel != "LIVE" && channel != "PTU" {
-        return format!("echo {}\n", shell_line(&[format!(
-            "{channel} builds are not dispatched to the tool repos."
-        )]));
+        return format!(
+            "echo {}\n",
+            shell_line(&[format!(
+                "{channel} builds are not dispatched to the tool repos."
+            )])
+        );
     }
     let mut block = String::from("if [ -z \"${SC_NO_DISPATCH:-}\" ]; then\n");
     for repo in repos {
@@ -2621,7 +2624,9 @@ mod tests {
         assert!(fresh.contains("\ncd '/tmp/dumps checkout'\nif [ \"$(git rev-parse HEAD)\" = \"$(git rev-parse '5.0.202.35026^{commit}')\" ]; then\n  gh release upload"));
         assert!(fresh.contains("release asset not uploaded.'\nfi\n"));
         // Then every tool repo is told, after the upload, unless SC_NO_DISPATCH is set.
-        let dispatch = fresh.find("if [ -z \"${SC_NO_DISPATCH:-}\" ]; then\n").unwrap();
+        let dispatch = fresh
+            .find("if [ -z \"${SC_NO_DISPATCH:-}\" ]; then\n")
+            .unwrap();
         assert!(upload < dispatch);
         assert!(fresh.ends_with("fi\n"));
         let edited = release_script(&plan, true);
