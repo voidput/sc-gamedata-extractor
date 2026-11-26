@@ -189,7 +189,14 @@ use, and 310 GB on `local-path`. See [ideas](../later/ideas.md).
    `SC_AUTO_PUBLISH` unset until two dry runs are clean.
 3. **Hub fan-out.** Add `fanout.yml` to the dump template. The user creates
    `TOOLS_DISPATCH_TOKEN`. Test with `workflow_dispatch` on the current tag.
-4. **snares.** Open as PR voidput/snares#10 (branch `ci/data-sync`), checks green, not merged.
+4. **snares.** **Decision 2026-11-25: daily poll, no data commits.** The PR flow below cannot
+   merge: `main` requires the `check` status, and token-opened PRs never get it. So snares
+   bakes the latest LIVE and PTU tags at build time and deploys Pages, without committing:
+   - a daily `schedule`, plus `workflow_dispatch` so the `make publish` dispatch still rebuilds
+     at once;
+   - it may skip the deploy when the tags' `build.json` `revision` hasn't changed.
+   The steps below record the PR flow it replaces.
+   Opened as PR voidput/snares#10 (branch `ci/data-sync`), checks green, not merged.
    - `universe*.json` already carry top-level `build` and `channel`.
    - The `main` ruleset requires a PR plus the `check` status, squash only, so the sync uses a
      PR flow: branch `data/<channel>-<build>`, then `gh pr create`, then `gh workflow run ci.yml`
