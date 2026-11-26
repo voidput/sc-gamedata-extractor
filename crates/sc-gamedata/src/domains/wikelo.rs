@@ -17,9 +17,11 @@ use crate::collate::locale_compare;
 use crate::domain::{Domain, DomainError, ParseContext, field};
 use crate::helpers_gameplay::{add_count, by_count_desc, file_ref_stem};
 use crate::output::js_key_order;
-use crate::records::{GameRecord, num, ref_path, ref_path_str, str_};
+use crate::domains::missions::{RepAmount, rep_amount};
+use crate::records::{GameRecord, RecordSet, num, ref_path, ref_path_str, str_};
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 
 pub static DOMAIN: Wikelo = Wikelo;
 
@@ -54,6 +56,83 @@ pub struct WikeloTrade {
     pub contracts: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rewards: Option<Vec<WikeloReward>>,
+    /// `ContractResult_LegacyReputation` results of the contracts that run this template,
+    /// distinct (see `_assumptions`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rep_rewards: Option<Vec<TradeRep>>,
+}
+
+/// One reputation result of a generator contract.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TradeRep {
+    #[serde(flatten)]
+    pub amount: RepAmount,
+    /// The result's `missionResults`: one flag per mission outcome slot, as the record
+    /// gives them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mission_results: Option<Vec<bool>>,
+}
+
+/// What `repRewards` rests on that the records do not state.
+pub const ASSUMPTIONS: &[&str] = &[
+    "repRewards[].missionResults: the result's five outcome flags, in record order; which mission outcome each slot is for is not stated in the records (item rewards here are read as success-only when the first flag is set).",
+];
+
+/// `ContractResult_LegacyReputation` results per generator contract (debug name).
+pub fn contract_reputation<'a>(
+    records: impl IntoIterator<Item = &'a GameRecord>,
+    set: &RecordSet,
+) -> HashMap<String, Vec<TradeRep>> {
+    fn results(value: &Value, set: &RecordSet, out: &mut Vec<TradeRep>) {
+        match value {
+            Value::Array(items) => items.iter().for_each(|v| results(v, set, out)),
+            Value::Object(obj) => {
+                if obj.get("_Type_").and_then(Value::as_str) == Some("ContractResult_LegacyReputation")
+                    && let Some(params) = obj.get("contractResultReputationAmounts")
+                {
+                    let rep = TradeRep {
+                        amount: rep_amount(set, params),
+                        mission_results: obj.get("missionResults").and_then(Value::as_array).map(
+                            |flags| flags.iter().map(|f| f.as_bool() == Some(true)).collect(),
+                        ),
+                    };
+                    if !out.contains(&rep) {
+                        out.push(rep);
+                    }
+                    return;
+                }
+                obj.values().for_each(|v| results(v, set, out));
+            }
+            _ => {}
+        }
+    }
+    fn contracts(value: &Value, set: &RecordSet, out: &mut HashMap<String, Vec<TradeRep>>) {
+        match value {
+            Value::Array(items) => items.iter().for_each(|v| contracts(v, set, out)),
+            Value::Object(obj) => {
+                if obj.get("_Type_").and_then(Value::as_str) == Some("Contract") {
+                    if let Some(name) = str_(obj.get("debugName")) {
+                        let mut found = Vec::new();
+                        if let Some(r) = obj.get("contractResults") {
+                            results(r, set, &mut found);
+                        }
+                        if !found.is_empty() {
+                            out.entry(name.to_string()).or_default().extend(found);
+                        }
+                    }
+                    return;
+                }
+                obj.values().for_each(|v| contracts(v, set, out));
+            }
+            _ => {}
+        }
+    }
+    let mut out = HashMap::new();
+    for record in records {
+        contracts(&record.value, set, &mut out);
+    }
+    out
 }
 
 /// One reward. Field order is the TS object's (`item, amount, weighting, source`).
@@ -89,6 +168,7 @@ struct Summary {
     with_inferred_reward_only: usize,
     reward_mismatch: Vec<RewardMismatch>,
     contracts_without_template_trade: Vec<String>,
+    with_rep_rewards: usize,
 }
 
 /// A vehicle trade whose name implies one reward while its awards name another.
@@ -355,6 +435,7 @@ pub fn parse_wikelo_trade(record: &GameRecord) -> Option<WikeloTrade> {
         hand_ins,
         contracts: None,
         rewards: None,
+        rep_rewards: None,
     })
 }
 
@@ -371,18 +452,25 @@ impl Domain for Wikelo {
     }
 
     fn filters(&self) -> &'static [&'static str] {
+        // Reputation and factions for the reward amounts and factions of `repRewards`.
         &[
             "**/contracts/contracttemplates/**",
             "**/contracts/contractgenerator/**",
+            "**/reputation/**",
+            "**/factions/factionreputation/**",
         ]
     }
 
     fn parse(&self, ctx: &ParseContext<'_>) -> Result<Map<String, Value>, DomainError> {
-        let contracts = collector_contracts(ctx.records.iter().filter(|r| {
-            r.record_path
-                .to_lowercase()
-                .contains("contractgenerator/thecollector")
-        }));
+        let generator = || {
+            ctx.records.iter().filter(|r| {
+                r.record_path
+                    .to_lowercase()
+                    .contains("contractgenerator/thecollector")
+            })
+        };
+        let contracts = collector_contracts(generator());
+        let reputation = contract_reputation(generator(), ctx.records);
         let collector: Vec<&GameRecord> = ctx
             .records
             .of_type("ContractTemplate")
@@ -405,6 +493,17 @@ impl Domain for Wikelo {
             })
             .collect();
         trades.sort_by(|a, b| locale_compare(&a.name, &b.name));
+        for trade in &mut trades {
+            let mut reps: Vec<TradeRep> = Vec::new();
+            for c in trade.contracts.iter().flatten() {
+                for r in reputation.get(c).into_iter().flatten() {
+                    if !reps.contains(r) {
+                        reps.push(r.clone());
+                    }
+                }
+            }
+            trade.rep_rewards = (!reps.is_empty()).then_some(reps);
+        }
         let used: std::collections::HashSet<&str> = trades
             .iter()
             .flat_map(|t| t.contracts.iter().flatten().map(String::as_str))
@@ -425,6 +524,7 @@ impl Domain for Wikelo {
         }
 
         let mut body = Map::new();
+        body.insert("_assumptions".into(), json!(ASSUMPTIONS));
         field(&mut body, "trades", &trades)?;
         body.insert("totalDemand".into(), Value::Object(by_count_desc(&demand)));
         field(
@@ -452,6 +552,7 @@ impl Domain for Wikelo {
                 // Contracts on a shared template (itemresourcegathering_thecollector) set
                 // their own hand-ins through overrides, so no template trade carries them.
                 contracts_without_template_trade: without_trade,
+                with_rep_rewards: trades.iter().filter(|t| t.rep_rewards.is_some()).count(),
             },
         )?;
         Ok(body)
@@ -680,5 +781,54 @@ mod tests {
         assert_eq!(summary["contractsWithoutTemplateTrade"], json!(["TheCollector_Idris"]));
         assert_eq!(summary["withAwardedReward"], 2);
         assert_eq!(summary["withInferredRewardOnly"], 1);
+    }
+
+    #[test]
+    fn lists_reputation_per_trade_from_the_contracts_running_it() {
+        let rep = |reward: &str| {
+            json!({"_Type_": "ContractResult_LegacyReputation", "missionResults": [true, false, false, false, false],
+                   "contractResultReputationAmounts": {"_Type_": "SReputationAmountParams",
+                       "factionReputation": format!("{ROOT}factions/factionreputation/factionreputation_wikelo.json"),
+                       "reputationScope": format!("{ROOT}reputation/scopes/reputationscope_wikelo.json"),
+                       "reward": format!("{ROOT}reputation/rewards/missionrewards_reputation/{reward}.json")}})
+        };
+        let record = |name: &str, path: &str, value: Value| {
+            normalize_record(
+                json!({"_RecordName_": name, "_RecordId_": name, "_RecordValue_": value}),
+                &format!("{ROOT}{path}"),
+            )
+            .unwrap()
+        };
+        let generator = record(
+            "ContractGenerator.thecollector",
+            "contracts/contractgenerator/thecollector.json",
+            json!({"_Type_": "ContractGenerator", "generators": [{"contracts": [
+                {"_Type_": "Contract", "debugName": "TheCollector_Vehicle_Polaris",
+                 "template": format!("{ROOT}contracts/contracttemplates/thecollector_vehicles_polaris.json"),
+                 "contractResults": {"contractResults": [rep("wikelo_25"), rep("wikelo_25")]}}]}]}),
+        );
+        let set = RecordSet::new(vec![
+            reward_template("TheCollector_Vehicles_Polaris"),
+            reward_template("TheCollector_Vehicles_Nox"),
+            generator,
+            record("SReputationRewardAmount.Wikelo_25", "reputation/rewards/missionrewards_reputation/wikelo_25.json",
+                   json!({"_Type_": "SReputationRewardAmount", "reputationAmount": 25})),
+            record("SReputationScopeParams.ReputationScope_Wikelo", "reputation/scopes/reputationscope_wikelo.json",
+                   json!({"_Type_": "SReputationScopeParams", "scopeName": "Wikelo"})),
+            record("FactionReputation.FactionReputation_Wikelo", "factions/factionreputation/factionreputation_wikelo.json",
+                   json!({"_Type_": "FactionReputation"})),
+        ]);
+        let body = DOMAIN
+            .parse(&ParseContext::new(&set, &Localization::new(), &NoFiles))
+            .unwrap();
+        assert_eq!(
+            trade(&body, "TheCollector_Vehicles_Polaris")["repRewards"],
+            json!([{"faction": "FactionReputation_Wikelo", "scope": "Wikelo", "amount": 25.0,
+                    "missionResults": [true, false, false, false, false]}]),
+            "duplicates listed once"
+        );
+        assert!(trade(&body, "TheCollector_Vehicles_Nox").get("repRewards").is_none());
+        assert_eq!(body["summary"]["withRepRewards"], 1);
+        assert_eq!(body["_assumptions"], json!(ASSUMPTIONS));
     }
 }
