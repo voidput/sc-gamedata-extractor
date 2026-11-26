@@ -936,6 +936,7 @@ impl Domain for Ships {
             "**/entities/scitem/ships/**",
             "**/ammoparams/**",
             "**/inventorycontainers/**",
+            crate::domains::manufacturers::MANUFACTURER_FILTER,
         ]
     }
 
@@ -974,6 +975,8 @@ impl Domain for Ships {
         };
         let mut body = Map::new();
         field(&mut body, "vehicles", &vehicles)?;
+        let makers = crate::domains::manufacturers::names_by_code(ctx.records, ctx.localization);
+        crate::domains::manufacturers::add_manufacturer_names(body.get_mut("vehicles"), &makers);
         body.insert(
             "byManufacturer".into(),
             Value::Object(by_count_desc(&by_manufacturer)),

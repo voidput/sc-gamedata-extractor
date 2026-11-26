@@ -11,7 +11,8 @@ use crate::collate::locale_compare;
 use crate::domain::{Domain, DomainError, ParseContext, field};
 use crate::localization::{LocRefs, Localization, loc_refs, localize};
 use crate::output::js_key_order;
-use crate::records::GameRecord;
+use crate::records::{GameRecord, RecordSet};
+use std::collections::HashMap;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -34,6 +35,9 @@ pub struct Manufacturer {
     /// `nameKey`, `descriptionKey`, `nameStatus`.
     #[serde(flatten)]
     pub loc: LocRefs,
+    /// The record's own `Code` field (`AEG` where `code` is `AEGS`), `null` when empty or
+    /// absent. `code` stays the key every dataset uses.
+    pub record_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,6 +68,77 @@ pub fn parse_manufacturer(record: &GameRecord, localization: &Localization) -> M
             loc.and_then(|l| l.get("Name")),
             loc.and_then(|l| l.get("Description")),
         ),
+        record_code: record
+            .value
+            .get("Code")
+            .and_then(Value::as_str)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string),
+    }
+}
+
+/// Glob that hands a domain the manufacturer records, for [`names_by_code`].
+pub const MANUFACTURER_FILTER: &str = "**/scitemmanufacturer/**";
+
+/// `(code, display name)` per manufacturer code, keyed by the upper-cased code, from the same
+/// records and in the same way as `byCode`: the join `manufacturerCode` / `manufacturerName`
+/// on ships and item tags is read from. `code` is the `byCode` key as published (`AEGS`,
+/// `GRIN_Weapons`).
+pub fn names_by_code(
+    records: &RecordSet,
+    localization: &Localization,
+) -> HashMap<String, (String, String)> {
+    let mut named: Vec<Manufacturer> = records
+        .of_type("SCItemManufacturer")
+        .filter(|r| is_manufacturer_record(r))
+        .map(|r| parse_manufacturer(r, localization))
+        .filter(looks_real)
+        .collect();
+    named.sort_by(|a, b| {
+        locale_compare(
+            a.name.as_deref().unwrap_or(""),
+            b.name.as_deref().unwrap_or(""),
+        )
+    });
+    let mut out = HashMap::new();
+    for m in named {
+        if let Some(name) = m.name {
+            out.insert(m.code.to_uppercase(), (m.code, name));
+        }
+    }
+    out
+}
+
+/// Adds `manufacturerCode` (the `byCode` key) and `manufacturerName` right after
+/// `manufacturer` on each row of `rows` (a serialized array of objects) whose code resolves
+/// through `names` (case-insensitively). Rows with no code or an unknown one are left as
+/// they are.
+pub fn add_manufacturer_names(
+    rows: Option<&mut Value>,
+    names: &HashMap<String, (String, String)>,
+) {
+    let Some(Value::Array(rows)) = rows else {
+        return;
+    };
+    for row in rows {
+        let Value::Object(obj) = row else { continue };
+        let Some((code, name)) = obj
+            .get("manufacturer")
+            .and_then(Value::as_str)
+            .and_then(|c| names.get(&c.to_uppercase()))
+        else {
+            continue;
+        };
+        let at = obj
+            .keys()
+            .position(|k| k == "manufacturer")
+            .map_or(obj.len(), |i| i + 1);
+        obj.shift_insert(at, "manufacturerCode".into(), Value::String(code.clone()));
+        obj.shift_insert(
+            at + 1,
+            "manufacturerName".into(),
+            Value::String(name.clone()),
+        );
     }
 }
 
@@ -292,6 +367,55 @@ mod tests {
     }
 
     #[test]
+    fn publishes_the_record_code_beside_the_short_name() {
+        let mut aegs = manufacturer("AEGS", "", "@manufacturer_NameAEGS");
+        aegs.value["Code"] = json!("AEG");
+        let mut empty = manufacturer("UBA", "armor/", "@manufacturer_NameUBA");
+        empty.value["Code"] = json!("");
+        assert_eq!(
+            parse_manufacturer(&aegs, &localization()).record_code.as_deref(),
+            Some("AEG")
+        );
+        assert_eq!(parse_manufacturer(&empty, &localization()).record_code, None);
+        let body = parse(vec![aegs], &localization());
+        assert_eq!(body["manufacturers"][0]["code"], "AEGS");
+        assert_eq!(body["manufacturers"][0]["recordCode"], "AEG");
+    }
+
+    #[test]
+    fn names_codes_case_insensitively_and_inserts_after_the_code() {
+        let set = RecordSet::new(vec![
+            manufacturer("AEGS", "", "@manufacturer_NameAEGS"),
+            manufacturer("Paint_X", "paintcolorlogos/", "@manufacturer_NameUBA"),
+            manufacturer("NOPE", "", "@manufacturer_NameMissing"),
+        ]);
+        let names = names_by_code(&set, &localization());
+        assert_eq!(names.len(), 1);
+        let mut rows = json!([
+            {"name": "G", "manufacturer": "aegs", "role": "Fighter"},
+            {"name": "X", "manufacturer": "NOPE"},
+            {"name": "Y"}
+        ]);
+        add_manufacturer_names(Some(&mut rows), &names);
+        let keys: Vec<_> = rows[0].as_object().unwrap().keys().cloned().collect();
+        assert_eq!(
+            keys,
+            [
+                "name",
+                "manufacturer",
+                "manufacturerCode",
+                "manufacturerName",
+                "role"
+            ]
+        );
+        assert_eq!(rows[0]["manufacturerCode"], "AEGS");
+        assert_eq!(rows[0]["manufacturerName"], "Aegis Dynamics");
+        assert_eq!(rows[1], json!({"name": "X", "manufacturer": "NOPE"}));
+        assert_eq!(rows[2], json!({"name": "Y"}));
+        add_manufacturer_names(None, &names);
+    }
+
+    #[test]
     fn output_shape_and_order() {
         let body = parse(
             vec![
@@ -307,7 +431,7 @@ mod tests {
         assert_eq!(
             body["manufacturers"][0],
             json!({"code": "987", "recordName": "SCItemManufacturer.987", "id": "id-987", "name": "987",
-                   "nameKey": "manufacturer_Name987"})
+                   "nameKey": "manufacturer_Name987", "recordCode": null})
         );
         assert_eq!(body["manufacturers"][1]["code"], "AEGS");
         assert_eq!(

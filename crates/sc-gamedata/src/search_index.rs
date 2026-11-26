@@ -2,16 +2,27 @@
 //! `sc-gamedata/src/search-index.ts`, `query/search-index.ts` and the entry half of
 //! `query/fuzzy.ts`).
 //!
-//! Derived from two datasets rather than from game files: `game-item-tags.json` and
-//! `game-ships.json`. `sc-gamedata` rebuilds it after every parse that leaves both on disk
-//! and removes it when either is missing, so a stale index never sits beside new data;
-//! [`write_search_index`] does the same.
+//! Derived from datasets rather than from game files: `game-item-tags.json` and
+//! `game-ships.json` (required), plus `game-manufacturers.json`, `game-commodities.json` and
+//! `game-starmap.json` when they are beside them. `sc-gamedata` rebuilds it after every
+//! parse that leaves both required inputs on disk and removes it when either is missing, so
+//! a stale index never sits beside new data; [`write_search_index`] does the same.
 //!
-//! Shape (format 1): `{ _source, _build, _schema, format, columns, makers, types, items, ships }`,
-//! rows `[key, name, maker, type, family, noise]` with trailing zeros trimmed: `name` is 0
-//! when it equals `key`, `maker`/`type` are 1-based indices into `makers`/`types` (0 for
-//! none), `family` is the weapon family or 0, `noise` 1 for an entry the default list
-//! drops. One row per line, compact otherwise ([`serialize`]).
+//! Shape (format 1): `{ _source, _extracted, _build, _schema, _assumptions?, format, columns,
+//! makers, makerNames?, makerNamesEstimate?, types, items, ships, commodities?, places? }`,
+//! rows `[key, name, maker, type, family, noise, nameKey]` with trailing zeros trimmed:
+//! `name` is 0 when it equals `key`, `maker`/`type` are 1-based indices into
+//! `makers`/`types` (0 for none), `family` is the weapon family or 0, `noise` 1 for an entry
+//! the default list drops, `nameKey` the string-table key of a real name or 0. One row per
+//! line, compact otherwise ([`serialize`]).
+//!
+//! Columns and lists are only ever appended: a reader that knows the first six columns and
+//! the `items`/`ships` lists (the vendored `query/search-index.ts`) reads the file as before.
+//! `makerNames[i]` names `makers[i]` when it is a manufacturer code (`byCode`), else `null`;
+//! `makerNamesEstimate` maps the other makers (tag-derived names such as `KastakArms`) to a
+//! manufacturer whose name matches ignoring case and punctuation (see `_assumptions`).
+//! `commodities` are the named resource types, `places` the visible starmap locations with
+//! a real display name.
 //!
 //! Values are kept as the JSON values the datasets hold, so `undefined` (`None`), `null`
 //! and strings stay distinct exactly where the TypeScript distinguishes them.
@@ -30,9 +41,10 @@ pub const FORMAT: u64 = 1;
 /// `_schema` version (`game-search-index@1`; bump rule:
 /// [`crate::domain::Domain::schema_version`]).
 pub const SCHEMA_VERSION: u32 = 1;
-const COLUMNS: [&str; 6] = ["key", "name", "maker", "type", "family", "noise"];
-const SOURCE: &str =
-    "Derived from game-item-tags.json and game-ships.json (see src/search-index.ts)";
+const COLUMNS: [&str; 7] = ["key", "name", "maker", "type", "family", "noise", "nameKey"];
+const SOURCE: &str = "Derived from game-item-tags.json, game-ships.json, game-manufacturers.json, game-commodities.json and game-starmap.json (see crates/sc-gamedata/src/search_index.rs)";
+/// `_assumptions` entry, present when `makerNamesEstimate` is.
+const MAKER_NAMES_ASSUMPTION: &str = "makerNamesEstimate: a maker that is not a game-manufacturers byCode code (a Manufacturer/ tag name, or a code byCode does not list) is given the name of the one manufacturer whose display name equals it ignoring case, spaces and punctuation; no record links the maker to that manufacturer, and an item's own manufacturer can differ from its tag.";
 
 /// Item types that are world furniture rather than things a player looks up.
 const NOISE_TYPES: &[&str] = &[
@@ -64,6 +76,8 @@ pub struct Entry {
     pub ty: Option<Value>,
     /// Weapon family (items only).
     pub family: Option<String>,
+    /// String-table key of the name, when the name is a real localized string.
+    pub name_key: Option<Value>,
 }
 
 /// JavaScript truthiness of an optional JSON value.
@@ -83,6 +97,16 @@ fn coalesce(x: Option<&Value>, y: Option<&Value>) -> Option<Value> {
         None | Some(Value::Null) => y.cloned(),
         Some(v) => Some(v.clone()),
     }
+}
+
+/// `nameKey` of a dataset row whose name resolved (no `nameStatus`).
+fn real_name_key(row: &Value) -> Option<Value> {
+    if row.get("nameStatus").is_some_and(|v| !v.is_null()) {
+        return None;
+    }
+    row.get("nameKey")
+        .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+        .cloned()
 }
 
 fn tag_strings(item: &Value) -> Vec<&str> {
@@ -165,6 +189,7 @@ pub fn build_entries(items: &[Value], ships: &[Value], all: bool) -> Vec<Entry> 
             maker,
             ty: ty.cloned(),
             family,
+            name_key: real_name_key(item),
         });
     }
     for ship in ships {
@@ -187,6 +212,7 @@ pub fn build_entries(items: &[Value], ships: &[Value], all: bool) -> Vec<Entry> 
             maker,
             ty: coalesce(ship.get("role"), ship.get("career")),
             family: None,
+            name_key: real_name_key(ship),
         });
     }
     entries
@@ -210,6 +236,31 @@ pub struct SearchIndexDoc {
     pub types: Vec<Value>,
     pub items: Vec<Vec<Value>>,
     pub ships: Vec<Vec<Value>>,
+    /// `_extracted` of the inputs; `None` leaves the field out.
+    pub extracted: Option<Value>,
+    /// One per `makers` entry: its manufacturer name, or `null`. `None` without
+    /// manufacturer data.
+    pub maker_names: Option<Vec<Value>>,
+    /// Tag-derived maker -> matched manufacturer name (an estimate).
+    pub maker_names_estimate: Option<Map<String, Value>>,
+    /// `None` without commodity data.
+    pub commodities: Option<Vec<Vec<Value>>>,
+    /// `None` without starmap data.
+    pub places: Option<Vec<Vec<Value>>>,
+    pub assumptions: Vec<String>,
+}
+
+/// The optional inputs of [`build_search_index_with`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Extras<'a> {
+    /// `_extracted` to stamp on the index.
+    pub extracted: Option<&'a Value>,
+    /// `game-manufacturers.json` `byCode`.
+    pub by_code: Option<&'a Map<String, Value>>,
+    /// `game-commodities.json` `resources`.
+    pub resources: Option<&'a [Value]>,
+    /// `game-starmap.json` `locations`.
+    pub locations: Option<&'a [Value]>,
 }
 
 fn zero() -> Value {
@@ -224,6 +275,70 @@ fn is_zero(v: &Value) -> bool {
 pub fn build_search_index(
     items: &[Value],
     ships: &[Value],
+    build: Option<Value>,
+) -> SearchIndexDoc {
+    build_search_index_with(items, ships, &Extras::default(), build)
+}
+
+/// Lower-case letters and digits only: `Kastak Arms` and `KastakArms` compare equal.
+fn fold_name(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// `makerNames` and `makerNamesEstimate` for `makers`.
+fn maker_names(makers: &[Value], by_code: &Map<String, Value>) -> (Vec<Value>, Map<String, Value>) {
+    let code_names: HashMap<String, &Value> = by_code
+        .iter()
+        .map(|(code, name)| (code.to_uppercase(), name))
+        .collect();
+    let mut folded: HashMap<String, Vec<&str>> = HashMap::new();
+    for name in by_code.values().filter_map(Value::as_str) {
+        let names = folded.entry(fold_name(name)).or_default();
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    let mut estimate = Map::new();
+    let names = makers
+        .iter()
+        .map(|m| {
+            let Some(m) = m.as_str() else {
+                return Value::Null;
+            };
+            if let Some(name) = code_names.get(&m.to_uppercase()) {
+                return (*name).clone();
+            }
+            if let Some([only]) = folded.get(&fold_name(m)).map(Vec::as_slice) {
+                estimate.insert(m.to_string(), Value::from(*only));
+            }
+            Value::Null
+        })
+        .collect();
+    (names, estimate)
+}
+
+/// A row from its cells, trailing zeros trimmed.
+fn trimmed_row(mut row: Vec<Value>) -> Vec<Value> {
+    while row.len() > 1 && row.last().is_some_and(is_zero) {
+        row.pop();
+    }
+    row
+}
+
+/// A non-empty string field.
+fn text_of<'v>(row: &'v Value, key: &str) -> Option<&'v Value> {
+    row.get(key)
+        .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+}
+
+/// `buildSearchIndex` plus the optional entry kinds and maker names.
+pub fn build_search_index_with(
+    items: &[Value],
+    ships: &[Value],
+    extras: &Extras<'_>,
     build: Option<Value>,
 ) -> SearchIndexDoc {
     let all = build_entries(items, ships, true);
@@ -249,6 +364,12 @@ pub fn build_search_index(
         types: Vec::new(),
         items: Vec::new(),
         ships: Vec::new(),
+        extracted: extras.extracted.cloned(),
+        maker_names: None,
+        maker_names_estimate: None,
+        commodities: None,
+        places: None,
+        assumptions: Vec::new(),
     };
     let mut maker_ix: HashMap<String, usize> = HashMap::new();
     let mut type_ix: HashMap<String, usize> = HashMap::new();
@@ -282,6 +403,7 @@ pub fn build_search_index(
             Value::from(ty),
             e.family.clone().map(Value::String).unwrap_or_else(zero),
             Value::from(u8::from(noise[i])),
+            e.name_key.clone().unwrap_or_else(zero),
         ];
         while row.len() > 1 && row.last().is_some_and(is_zero) {
             row.pop();
@@ -289,6 +411,76 @@ pub fn build_search_index(
         match e.kind {
             Kind::Item => doc.items.push(row),
             Kind::Ship => doc.ships.push(row),
+        }
+    }
+
+    // Named resource types: key is the resource name, type its group label.
+    if let Some(resources) = extras.resources {
+        let mut rows = Vec::new();
+        for r in resources {
+            let (Some(key), Some(name)) = (text_of(r, "name"), text_of(r, "displayName")) else {
+                continue;
+            };
+            if r.get("nameStatus").is_some_and(|v| !v.is_null()) {
+                continue;
+            }
+            let group = text_of(r, "groupLabel")
+                .or_else(|| text_of(r, "group"))
+                .cloned();
+            let ty = intern(&group, &mut doc.types, &mut type_ix);
+            let not_traded = r.get("tradable") == Some(&Value::Bool(false));
+            rows.push(trimmed_row(vec![
+                key.clone(),
+                if name == key { zero() } else { name.clone() },
+                zero(),
+                Value::from(ty),
+                zero(),
+                Value::from(u8::from(not_traded)),
+                real_name_key(r).unwrap_or_else(zero),
+            ]));
+        }
+        doc.commodities = Some(rows);
+    }
+
+    // Visible starmap locations with a real display name: key is the record short name.
+    if let Some(locations) = extras.locations {
+        let mut rows = Vec::new();
+        for l in locations {
+            let Some(name) = text_of(l, "displayName") else {
+                continue;
+            };
+            if l.get("hiddenInStarmap") == Some(&Value::Bool(true))
+                || l.get("nameStatus").is_some_and(|v| !v.is_null())
+            {
+                continue;
+            }
+            let key = match l.get("recordName").and_then(Value::as_str) {
+                Some(r) => Value::from(r.strip_prefix("StarMapObject.").unwrap_or(r)),
+                None => match text_of(l, "name") {
+                    Some(n) => n.clone(),
+                    None => continue,
+                },
+            };
+            let ty = intern(&text_of(l, "type").cloned(), &mut doc.types, &mut type_ix);
+            rows.push(trimmed_row(vec![
+                key.clone(),
+                if *name == key { zero() } else { name.clone() },
+                zero(),
+                Value::from(ty),
+                zero(),
+                zero(),
+                real_name_key(l).unwrap_or_else(zero),
+            ]));
+        }
+        doc.places = Some(rows);
+    }
+
+    if let Some(by_code) = extras.by_code {
+        let (names, estimate) = maker_names(&doc.makers, by_code);
+        doc.maker_names = Some(names);
+        if !estimate.is_empty() {
+            doc.maker_names_estimate = Some(estimate);
+            doc.assumptions.push(MAKER_NAMES_ASSUMPTION.to_string());
         }
     }
     doc
@@ -330,6 +522,7 @@ pub fn load_search_index_entries(doc: &Value, all: bool) -> Result<Vec<Entry>, U
             let cell = |i: usize| row.get(i).cloned().unwrap_or_else(zero);
             let key = row.get(0).cloned();
             let (name, maker, ty, family, noise) = (cell(1), cell(2), cell(3), cell(4), cell(5));
+            let name_key = cell(6);
             if truthy(Some(&noise)) && !all {
                 continue;
             }
@@ -347,6 +540,7 @@ pub fn load_search_index_entries(doc: &Value, all: bool) -> Result<Vec<Entry>, U
                     Kind::Item if !is_zero(&family) => Some(js_string_of(&family)),
                     _ => None,
                 },
+                name_key: (!is_zero(&name_key)).then_some(name_key),
             });
         }
     }
@@ -367,6 +561,9 @@ pub fn serialize(doc: &SearchIndexDoc) -> String {
     };
     let s = |v: Value| to_js_json_compact(&v);
     let mut fields = vec![format!("\"_source\": {}", s(Value::from(SOURCE)))];
+    if let Some(x) = &doc.extracted {
+        fields.push(format!("\"_extracted\": {}", s(x.clone())));
+    }
     if let Some(b) = &doc.build {
         fields.push(format!("\"_build\": {}", s(b.clone())));
     }
@@ -374,15 +571,39 @@ pub fn serialize(doc: &SearchIndexDoc) -> String {
         "\"_schema\": {}",
         s(Value::from(crate::output::schema_tag(NAME, SCHEMA_VERSION)))
     ));
+    if !doc.assumptions.is_empty() {
+        fields.push(format!(
+            "\"_assumptions\": {}",
+            s(Value::from(doc.assumptions.clone()))
+        ));
+    }
     fields.push(format!("\"format\": {}", doc.format));
     fields.push(format!("\"columns\": {}", s(Value::from(COLUMNS.to_vec()))));
     fields.push(format!(
         "\"makers\": {}",
         s(Value::Array(doc.makers.clone()))
     ));
+    if let Some(names) = &doc.maker_names {
+        fields.push(format!(
+            "\"makerNames\": {}",
+            s(Value::Array(names.clone()))
+        ));
+    }
+    if let Some(estimate) = &doc.maker_names_estimate {
+        fields.push(format!(
+            "\"makerNamesEstimate\": {}",
+            s(Value::Object(estimate.clone()))
+        ));
+    }
     fields.push(format!("\"types\": {}", s(Value::Array(doc.types.clone()))));
     fields.push(format!("\"items\": {}", rows(&doc.items)));
     fields.push(format!("\"ships\": {}", rows(&doc.ships)));
+    if let Some(c) = &doc.commodities {
+        fields.push(format!("\"commodities\": {}", rows(c)));
+    }
+    if let Some(p) = &doc.places {
+        fields.push(format!("\"places\": {}", rows(p)));
+    }
     format!("{{\n{}\n}}\n", fields.join(",\n"))
 }
 
@@ -416,12 +637,35 @@ pub fn write_search_index(dir: &Path) -> std::io::Result<Option<Written>> {
     };
     let get_build = |v: &Option<Value>| v.as_ref().and_then(|v| v.get("_build")).cloned();
     let build = coalesce(get_build(&tags).as_ref(), get_build(&ships).as_ref());
-    let doc = build_search_index(items, vehicles, build);
+    let get_extracted = |v: &Option<Value>| v.as_ref().and_then(|v| v.get("_extracted")).cloned();
+    let extracted = coalesce(
+        get_extracted(&tags).as_ref(),
+        get_extracted(&ships).as_ref(),
+    );
+    let makers = read_json(&dir.join("game-manufacturers.json"));
+    let commodities = read_json(&dir.join("game-commodities.json"));
+    let starmap = read_json(&dir.join("game-starmap.json"));
+    let extras = Extras {
+        extracted: extracted.as_ref(),
+        by_code: makers.as_ref().and_then(|m| m.get("byCode")?.as_object()),
+        resources: commodities
+            .as_ref()
+            .and_then(|c| c.get("resources")?.as_array())
+            .map(Vec::as_slice),
+        locations: starmap
+            .as_ref()
+            .and_then(|s| s.get("locations")?.as_array())
+            .map(Vec::as_slice),
+    };
+    let doc = build_search_index_with(items, vehicles, &extras, build);
     let body = serialize(&doc);
     std::fs::write(&file, &body)?;
     Ok(Some(Written {
         file,
-        entries: doc.items.len() + doc.ships.len(),
+        entries: doc.items.len()
+            + doc.ships.len()
+            + doc.commodities.as_ref().map_or(0, Vec::len)
+            + doc.places.as_ref().map_or(0, Vec::len),
         bytes: body.len(),
     }))
 }
@@ -553,13 +797,150 @@ mod tests {
         let d = build_search_index(&[], &[], None);
         assert_eq!(
             serialize(&d),
-            "{\n\"_source\": \"Derived from game-item-tags.json and game-ships.json (see src/search-index.ts)\",\n\"_schema\": \"game-search-index@1\",\n\"format\": 1,\n\"columns\": [\"key\",\"name\",\"maker\",\"type\",\"family\",\"noise\"],\n\"makers\": [],\n\"types\": [],\n\"items\": [],\n\"ships\": []\n}\n"
+            "{\n\"_source\": \"Derived from game-item-tags.json, game-ships.json, game-manufacturers.json, game-commodities.json and game-starmap.json (see crates/sc-gamedata/src/search_index.rs)\",\n\"_schema\": \"game-search-index@1\",\n\"format\": 1,\n\"columns\": [\"key\",\"name\",\"maker\",\"type\",\"family\",\"noise\",\"nameKey\"],\n\"makers\": [],\n\"types\": [],\n\"items\": [],\n\"ships\": []\n}\n"
         );
         let text = serialize(&doc());
         assert!(
             text.contains("\"ships\": [\n[\"AEGS_Gladius\",\"Aegis Gladius\",3,4],\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn appends_name_keys_only_for_real_names_and_loads_them_back() {
+        let items = [
+            json!({"className": "a", "name": "A", "type": "T", "nameKey": "item_NameA", "tags": []}),
+            json!({"className": "b", "name": "b", "type": "T", "nameKey": "LOC_PLACEHOLDER",
+                   "nameStatus": "placeholder", "isTemplate": true, "tags": []}),
+        ];
+        let d = build_search_index(&items, &[], None);
+        assert_eq!(
+            d.items[0],
+            vec![
+                json!("a"),
+                json!("A"),
+                json!(0),
+                json!(1),
+                json!(0),
+                json!(0),
+                json!("item_NameA")
+            ]
+        );
+        assert_eq!(d.items[1], vec![json!("b"), json!(0), json!(0), json!(1)]);
+        let e = load_search_index_entries(&to_value(&d), true).unwrap();
+        assert_eq!(e[0].name_key, Some(json!("item_NameA")));
+        assert_eq!(e[1].name_key, None);
+        assert_eq!(e, build_entries(&items, &[], true));
+    }
+
+    #[test]
+    fn adds_commodities_places_and_maker_names_without_moving_existing_indices() {
+        let by_code =
+            json!({"AEGS": "Aegis Dynamics", "KSAR": "Kastak Arms", "CRLF_Medgun": "CureLife"});
+        let resources = [
+            json!({"name": "Agricium", "displayName": "Agricium", "nameKey": "items_commodities_agricium",
+                   "groupLabel": "Metal", "tradable": true}),
+            json!({"name": "Heat", "displayName": "Heat", "nameKey": "k_heat", "group": "Heat", "tradable": false}),
+            json!({"name": "VIPCryopod", "nameKey": "LOC_PLACEHOLDER", "nameStatus": "placeholder"}),
+        ];
+        let locations = [
+            json!({"name": "Aberdeen", "recordName": "StarMapObject.Stanton1b", "displayName": "Aberdeen",
+                   "nameKey": "Stanton1b", "type": "Moon"}),
+            json!({"name": "Hidden", "recordName": "StarMapObject.H", "displayName": "Hidden",
+                   "type": "Outpost", "hiddenInStarmap": true}),
+            json!({"name": "Unnamed", "recordName": "StarMapObject.U", "type": "Outpost"}),
+        ];
+        let extras = Extras {
+            extracted: Some(&json!("2026-11-25T00:00:00.000Z")),
+            by_code: by_code.as_object(),
+            resources: Some(&resources),
+            locations: Some(&locations),
+        };
+        let mut items = items();
+        items.push(
+            json!({"className": "medgun", "name": "Medgun", "type": "WeaponPersonal",
+                          "manufacturer": "CRLF_MEDGUN", "tags": []}),
+        );
+        let base = build_search_index(&items, &ships(), None);
+        let d = build_search_index_with(&items, &ships(), &extras, None);
+        // Existing columns and lists are untouched.
+        assert_eq!(
+            (&d.items, &d.ships, &d.makers),
+            (&base.items, &base.ships, &base.makers)
+        );
+        assert_eq!(d.types[..base.types.len()], base.types[..]);
+        let ix = |v: &str| json!(d.types.iter().position(|x| x == v).unwrap() + 1);
+        assert_eq!(
+            d.commodities,
+            Some(vec![
+                vec![
+                    json!("Agricium"),
+                    json!(0),
+                    json!(0),
+                    ix("Metal"),
+                    json!(0),
+                    json!(0),
+                    json!("items_commodities_agricium")
+                ],
+                vec![
+                    json!("Heat"),
+                    json!(0),
+                    json!(0),
+                    ix("Heat"),
+                    json!(0),
+                    json!(1),
+                    json!("k_heat")
+                ],
+            ])
+        );
+        assert_eq!(
+            d.places,
+            Some(vec![vec![
+                json!("Stanton1b"),
+                json!("Aberdeen"),
+                json!(0),
+                ix("Moon"),
+                json!(0),
+                json!(0),
+                json!("Stanton1b")
+            ]])
+        );
+        // Codes resolve through byCode (any case); tag names only as an estimate.
+        let name_of = |m: &str| {
+            d.maker_names.as_ref().unwrap()[d.makers.iter().position(|x| x == m).unwrap()].clone()
+        };
+        assert_eq!(name_of("AEGS"), json!("Aegis Dynamics"));
+        assert_eq!(name_of("CRLF_MEDGUN"), json!("CureLife"));
+        assert_eq!(name_of("KastakArms"), Value::Null);
+        assert_eq!(
+            d.maker_names_estimate,
+            json!({"KastakArms": "Kastak Arms"}).as_object().cloned()
+        );
+        assert_eq!(d.assumptions, vec![MAKER_NAMES_ASSUMPTION.to_string()]);
+        let v = to_value(&d);
+        assert_eq!(v["_extracted"], "2026-11-25T00:00:00.000Z");
+        assert_eq!(
+            load_search_index_entries(&v, true).unwrap(),
+            build_entries(&items, &ships(), true)
+        );
+        let text = serialize(&d);
+        let order: Vec<usize> = [
+            "\"_source\"",
+            "\"_extracted\"",
+            "\"_schema\"",
+            "\"_assumptions\"",
+            "\"makers\"",
+            "\"makerNames\"",
+            "\"makerNamesEstimate\"",
+            "\"types\"",
+            "\"ships\"",
+            "\"commodities\"",
+            "\"places\"",
+        ]
+        .iter()
+        .map(|k| text.find(k).unwrap())
+        .collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{text}");
     }
 
     #[test]

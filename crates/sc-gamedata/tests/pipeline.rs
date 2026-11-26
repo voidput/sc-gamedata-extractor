@@ -52,28 +52,32 @@ fn manufacturers_file_is_byte_exact() {
       "recordName": "SCItemManufacturer.987",
       "id": "id-987",
       "name": "987",
-      "nameKey": "manufacturer_Name987"
+      "nameKey": "manufacturer_Name987",
+      "recordCode": null
     },
     {
       "code": "AEGS",
       "recordName": "SCItemManufacturer.AEGS",
       "id": "id-AEGS",
       "name": "Aegis Dynamics",
-      "nameKey": "manufacturer_NameAEGS"
+      "nameKey": "manufacturer_NameAEGS",
+      "recordCode": null
     },
     {
       "code": "FSKI",
       "recordName": "SCItemManufacturer.FSKI",
       "id": "id-FSKI",
       "name": "Aegis Dynamics",
-      "nameKey": "manufacturer_NameAEGS"
+      "nameKey": "manufacturer_NameAEGS",
+      "recordCode": null
     },
     {
       "code": "UBA",
       "recordName": "SCItemManufacturer.UBA",
       "id": "id-UBA",
       "name": "Universal Body Armor",
-      "nameKey": "manufacturer_NameUBA"
+      "nameKey": "manufacturer_NameUBA",
+      "recordCode": null
     }
   ],
   "byCode": {

@@ -238,7 +238,11 @@ impl Domain for ItemTagsDomain {
     }
 
     fn filters(&self) -> &'static [&'static str] {
-        &["**/entities/scitem/**", "**/tagdatabase/**"]
+        &[
+            "**/entities/scitem/**",
+            "**/tagdatabase/**",
+            crate::domains::manufacturers::MANUFACTURER_FILTER,
+        ]
     }
 
     fn needs_localization(&self) -> bool {
@@ -300,6 +304,8 @@ impl Domain for ItemTagsDomain {
         };
         let mut body = Map::new();
         field(&mut body, "items", &items)?;
+        let makers = crate::domains::manufacturers::names_by_code(ctx.records, ctx.localization);
+        crate::domains::manufacturers::add_manufacturer_names(body.get_mut("items"), &makers);
         field(&mut body, "summary", &summary)?;
         Ok(body)
     }
