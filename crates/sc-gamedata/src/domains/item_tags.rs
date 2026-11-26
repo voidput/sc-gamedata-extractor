@@ -11,6 +11,11 @@
 //! `ShouldIgnorePrimaryAmmoContainer`) plus `secondaryAmmoContainers`, each widened to every
 //! magazine-type item with the same attach tags.
 //!
+//! Blueprint products and NPC gear classes that carry no record-level tags are not rows of
+//! the domain itself; [`add_identity_rows`] adds them afterwards from `game-blueprints` and
+//! `game-npc-loadouts` (spec `cross-dataset-derivations.md` D3, decision 2): identity only,
+//! with `size` / `grade` from `AttachDef`, empty `tags` and `source`.
+//!
 //! Ported from the sc-gamedata working tree of 2026-11-14 (`item-tags.ts` was not yet
 //! committed there). LIVE 4.10.200.58746 versus the golden dump: identical except two rows
 //! the golden has and this build's DataCore does not, `vncl_melee_01_tint03` and
@@ -25,10 +30,11 @@ use crate::entity::component;
 use crate::helpers_items::item_common::{attach_def, display_name, manufacturer_of};
 use crate::helpers_items::tags::{TagIndex, build_tag_index};
 use crate::localization::{LocRefs, Localization, loc_refs};
-use crate::records::{GameRecord, at, ref_path, ref_path_str, str_};
+use crate::records::{GameRecord, RecordSource, at, num, ref_path, ref_path_str, str_};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeSet, HashMap};
+use std::path::Path;
 
 pub static DOMAIN: ItemTagsDomain = ItemTagsDomain;
 
@@ -45,6 +51,12 @@ pub struct ItemTags {
     pub ty: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub_type: Option<String>,
+    /// `AttachDef.Size`; identity rows only ([`add_identity_rows`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<f64>,
+    /// `AttachDef.Grade`; identity rows only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grade: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manufacturer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,6 +67,10 @@ pub struct ItemTags {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ammo_items: Option<Vec<String>>,
+    /// Why an untagged record is listed: `blueprint` (a blueprint produces it) or
+    /// `npcGear` (an NPC loadout wears it). Absent on tagged rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<&'static str>,
 }
 
 /// `itemTagPaths`: the record-level tags as paths, deduplicated, in UTF-16 order.
@@ -190,10 +206,15 @@ pub fn parse_item_tags(
     if paths.is_empty() {
         return None;
     }
+    Some(item_row(record, localization, paths))
+}
+
+/// A row from the record's `AttachDef`, with the given tag paths.
+fn item_row(record: &GameRecord, localization: &Localization, paths: Vec<String>) -> ItemTags {
     let def = attach_def(record);
     let (localized, placeholder) = display_name(def, localization);
     let sub_type = str_(def.get("SubType"));
-    Some(ItemTags {
+    ItemTags {
         name: if placeholder {
             record.short_name.clone()
         } else {
@@ -203,6 +224,8 @@ pub fn parse_item_tags(
         id: record.id.clone(),
         ty: str_(def.get("Type")).map(str::to_string),
         sub_type: sub_type.filter(|s| *s != "UNDEFINED").map(str::to_string),
+        size: None,
+        grade: None,
         manufacturer: manufacturer_of(def),
         is_template: placeholder.then_some(true),
         loc: loc_refs(
@@ -212,7 +235,143 @@ pub fn parse_item_tags(
         ),
         tags: paths,
         ammo_items: None,
-    })
+        source: None,
+    }
+}
+
+/// Output file name of the domain.
+pub const FILE: &str = "game-item-tags.json";
+
+/// What [`add_identity_rows`] added: rows per `source`, and wanted classes with no item
+/// record in the DataCore.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IdentityRows {
+    pub blueprint: usize,
+    pub npc_gear: usize,
+    pub not_found: Vec<String>,
+}
+
+fn read_json(file: &Path) -> Option<Value> {
+    serde_json::from_slice(&std::fs::read(file).ok()?).ok()
+}
+
+/// Lower-case class -> `source` of the classes `game-blueprints` produces and
+/// `game-npc-loadouts` actors wear (a blueprint product wins when both name it).
+pub fn identity_wanted(blueprints: Option<&Value>, loadouts: Option<&Value>) -> Vec<(String, &'static str)> {
+    let mut out: Vec<(String, &'static str)> = Vec::new();
+    let mut seen = BTreeSet::new();
+    let products = blueprints
+        .and_then(|b| b.get("blueprints")?.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|b| b.get("produces")?.as_str());
+    let worn = loadouts
+        .and_then(|l| l.get("actors")?.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|a| a.get("items").and_then(Value::as_array).into_iter().flatten())
+        .filter_map(|i| i.get("item")?.as_str());
+    for (class, source) in products
+        .map(|c| (c, "blueprint"))
+        .chain(worn.map(|c| (c, "npcGear")))
+    {
+        let key = class.to_lowercase();
+        if !key.is_empty() && seen.insert(key.clone()) {
+            out.push((key, source));
+        }
+    }
+    out
+}
+
+/// Add identity rows to `game-item-tags.json` in `dir` for the blueprint products and NPC
+/// gear classes it lacks (`game-blueprints.json`, `game-npc-loadouts.json` beside it), read
+/// from their item records (`EntityClassDefinition` under `entities/scitem/`). Rows a
+/// previous run added (`source` set) are dropped first, so a rerun restates the inputs on
+/// disk. `None` when the item-tags file is missing; the file is rewritten only on a change.
+pub fn add_identity_rows(
+    dir: &Path,
+    records: &dyn RecordSource,
+    localization: &Localization,
+) -> std::io::Result<Option<IdentityRows>> {
+    let file = dir.join(FILE);
+    let Some(mut doc) = read_json(&file) else {
+        return Ok(None);
+    };
+    let Some(items) = doc.get_mut("items").and_then(Value::as_array_mut) else {
+        return Ok(None);
+    };
+    let before = items.clone();
+    items.retain(|i| i.get("source").is_none());
+    let have: BTreeSet<String> = items
+        .iter()
+        .filter_map(|i| i.get("className")?.as_str())
+        .map(str::to_lowercase)
+        .collect();
+    let blueprints = read_json(&dir.join("game-blueprints.json"));
+    let loadouts = read_json(&dir.join("game-npc-loadouts.json"));
+    let wanted: HashMap<String, &'static str> =
+        identity_wanted(blueprints.as_ref(), loadouts.as_ref())
+            .into_iter()
+            .filter(|(c, _)| !have.contains(c))
+            .collect();
+    // The first item record of each wanted class, in DataCore order.
+    let mut found: HashMap<String, usize> = HashMap::new();
+    for (i, m) in records.metas().iter().enumerate() {
+        if m.struct_type != "EntityClassDefinition"
+            || !m.record_path.to_lowercase().contains("entities/scitem/")
+        {
+            continue;
+        }
+        let short = m.name.split_once('.').map_or(m.name.as_str(), |(_, s)| s);
+        let key = short.to_lowercase();
+        if wanted.contains_key(&key) {
+            found.entry(key).or_insert(i);
+        }
+    }
+    let mut added = IdentityRows::default();
+    let mut rows: Vec<ItemTags> = Vec::new();
+    for (key, &i) in &found {
+        let Ok(Some(record)) = records.load(i) else {
+            added.not_found.push(key.clone());
+            continue;
+        };
+        let def = attach_def(&record);
+        let mut row = item_row(&record, localization, Vec::new());
+        row.size = num(def.get("Size"));
+        row.grade = num(def.get("Grade"));
+        row.source = Some(wanted[key]);
+        match wanted[key] {
+            "blueprint" => added.blueprint += 1,
+            _ => added.npc_gear += 1,
+        }
+        rows.push(row);
+    }
+    added
+        .not_found
+        .extend(wanted.keys().filter(|k| !found.contains_key(*k)).cloned());
+    added.not_found.sort();
+    for r in rows {
+        items.push(serde_json::to_value(r).map_err(std::io::Error::other)?);
+    }
+    let name_of = |v: &Value| v.get("className").and_then(Value::as_str).unwrap_or("").to_string();
+    items.sort_by(|a, b| compare_names(&name_of(a), &name_of(b)));
+    let total = items.len();
+    let changed = *items != before;
+    if let Some(summary) = doc.get_mut("summary").and_then(Value::as_object_mut) {
+        summary.insert("items".into(), Value::from(total));
+        if added.blueprint + added.npc_gear > 0 {
+            summary.insert(
+                "identityRows".into(),
+                serde_json::json!({"blueprint": added.blueprint, "npcGear": added.npc_gear}),
+            );
+        } else {
+            summary.remove("identityRows");
+        }
+    }
+    if changed {
+        std::fs::write(&file, crate::output::to_js_json(&doc))?;
+    }
+    Ok(Some(added))
 }
 
 #[derive(Debug, Serialize)]
@@ -495,5 +654,54 @@ mod tests {
                     "tags": ["LootGeneration/CanGenerateAsLoot", "Weapon/FPS"]}])
         );
         assert_eq!(body["summary"]["canGenerateAsLoot"], 1);
+    }
+
+    #[test]
+    fn identity_rows_for_untagged_blueprint_products_and_npc_gear() {
+        let dir = std::env::temp_dir().join(format!("sc-gamedata-identity-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entity = |short: &str, path: &str, def: Value| {
+            json!({"_RecordName_": format!("EntityClassDefinition.{short}"), "_RecordId_": format!("id-{short}"),
+                   "_RecordPath_": format!("libs/foundry/records/entities/scitem/{path}/{short}.xml"),
+                   "_RecordValue_": {"_Type_": "EntityClassDefinition", "tags": [],
+                       "Components": [attach(def)]}})
+        };
+        let source = crate::fixtures::FixtureSource::from_envelopes(vec![
+            entity("AMRS_LaserCannon_S1", "ships/weapons",
+                json!({"Type": "WeaponGun", "SubType": "Gun", "Size": 1, "Grade": 2})),
+            entity("bautista_outfit_01", "characters", json!({"Type": "Char_Clothing_Torso_1", "Size": 1,
+                "Localization": {"Name": "@LOC_PLACEHOLDER"}})),
+            entity("tagged_rifle", "weapons", json!({"Type": "WeaponPersonal"})),
+        ])
+        .unwrap();
+        let write = |name: &str, v: Value| std::fs::write(dir.join(name), v.to_string()).unwrap();
+        write(FILE, json!({"_build": "1.0.1", "items": [{"name": "Rifle", "className": "tagged_rifle", "id": "r", "tags": ["Weapon"]}],
+                           "summary": {"items": 1, "withAmmo": 0}}));
+        write("game-blueprints.json", json!({"blueprints": [{"name": "a", "produces": "amrs_lasercannon_s1"},
+                                                            {"name": "b", "produces": "TAGGED_RIFLE"}]}));
+        write("game-npc-loadouts.json", json!({"actors": [{"class": "npc", "items": [
+            {"item": "bautista_outfit_01"}, {"item": "no_such_record"}]}]}));
+        let loc = Localization::new();
+        let r = add_identity_rows(&dir, &source, &loc).unwrap().unwrap();
+        assert_eq!((r.blueprint, r.npc_gear), (1, 1));
+        assert_eq!(r.not_found, vec!["no_such_record"]);
+        let doc: Value = serde_json::from_slice(&std::fs::read(dir.join(FILE)).unwrap()).unwrap();
+        assert_eq!(
+            doc["items"][0],
+            json!({"name": "AMRS_LaserCannon_S1", "className": "AMRS_LaserCannon_S1", "id": "id-AMRS_LaserCannon_S1",
+                   "type": "WeaponGun", "subType": "Gun", "size": 1, "grade": 2, "isTemplate": true,
+                   "nameStatus": "empty", "tags": [], "source": "blueprint"})
+        );
+        assert_eq!(doc["items"][1]["source"], "npcGear");
+        assert_eq!(doc["items"][1]["isTemplate"], true);
+        assert_eq!(doc["items"][2]["className"], "tagged_rifle");
+        assert_eq!(doc["summary"]["items"], 3);
+        assert_eq!(doc["summary"]["identityRows"], json!({"blueprint": 1, "npcGear": 1}));
+        // A rerun restates the same rows (no duplicates).
+        let again = add_identity_rows(&dir, &source, &loc).unwrap().unwrap();
+        assert_eq!(again, r);
+        let doc2: Value = serde_json::from_slice(&std::fs::read(dir.join(FILE)).unwrap()).unwrap();
+        assert_eq!(doc2, doc);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

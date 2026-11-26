@@ -12,7 +12,9 @@
 //! - [`search_index`] (`search-index.ts`): `game-search-index.json`, derived from the
 //!   item-tags and ships datasets;
 //! - [`item_obtain`]: `game-item-obtain.json`, loot odds and other sources per item, derived
-//!   from the item-tags, loot, item-sources, blueprints and Wikelo datasets;
+//!   from the item-tags, loot, item-sources, blueprints, Wikelo and NPC loadout datasets;
+//! - [`tag_index`]: `game-tag-index.json`, tag path -> items and selecting loot records,
+//!   derived from the item-tags and loot datasets;
 //! - [`cryxml`] (`cryxml.ts`): CryXmlB documents in raw archive files; [`xml`] (`xml.ts`):
 //!   text XML, and either form of an archive config file;
 //! - [`glob`] (`glob.ts`), [`collate`] (`Intl.Collator`/`localeCompare` orders);
@@ -50,6 +52,8 @@ pub mod resource_chain;
 pub mod search_index;
 pub mod source;
 pub mod strings;
+// game-tag-index.json: tag -> items and loot records, derived (cross-dataset-derivations D3).
+pub mod tag_index;
 pub mod xml;
 
 // For the `sc-gamedata` CLI: the fzf picker (`finder.ts`), the UEX client (`sources/uex.ts`)

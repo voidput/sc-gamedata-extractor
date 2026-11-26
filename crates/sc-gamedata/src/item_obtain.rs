@@ -31,9 +31,14 @@
 //!     loot[[spawns[], kind, scoreEstimate, perRollEstimate]], (best spawn of the top 12 areas)
 //!     areasTotal, otherTables[[tables[], perRollEstimate]], otherTablesTotal,
 //!     contractAwards[]{generator, contract, amount, weighting},
-//!     wikelo[]{trade, amount, source}, blueprints[]{recordName, rewardContracts} } },
+//!     wikelo[]{trade, amount, source}, blueprints[]{recordName, rewardContracts},
+//!     wornBy[[actors[], chanceEstimate]], wornByTotal } },
 //!   summary }
 //! ```
+//!
+//! `wornBy` (spec `cross-dataset-derivations.md` D1) joins `game-npc-loadouts.json` when it
+//! is there: the NPC types (`actors[]`, by index) that spawn wearing or carrying the item,
+//! with that file's own estimated chance, top [`MAX_WORN_BY`] actors.
 //!
 //! Only items with something to say are listed (a source, or a loot flag). Names, class
 //! and record names only: no prose, nothing UEX-derived. Odds keep 4 significant digits.
@@ -60,7 +65,9 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const MAX_LOOT: usize = 12;
 /// Tables no area rolls kept per item; the rest are counted in `otherTablesTotal`.
 pub const MAX_OTHER_TABLES: usize = 12;
-const SOURCE: &str = "Derived from game-item-tags, game-loot, game-item-sources, game-blueprints and game-wikelo-trades";
+/// Actors kept per item in `wornBy`; the rest are counted in `wornByTotal`.
+pub const MAX_WORN_BY: usize = 12;
+const SOURCE: &str = "Derived from game-item-tags, game-loot, game-item-sources, game-blueprints, game-wikelo-trades and game-npc-loadouts";
 
 /// What the odds rest on that the data does not state.
 pub const ASSUMPTIONS: &[&str] = &[
@@ -69,6 +76,7 @@ pub const ASSUMPTIONS: &[&str] = &[
     "Random loot is opt-in: only items tagged LootGeneration/CanGenerateAsLoot roll from tables; fixed and loose spawns ignore the flag.",
     "rarity: the spawn's LootRarity tag, else (raritySource: name) the last word of the spawn config's name.",
     "loot / otherTables rows of one item that differ only in the spawn or table index are one row whose first column (spawns / tables) lists the indices, sorted; rows rank by scoreEstimate (perRollEstimate for otherTables) descending, then first index. areasTotal / otherTablesTotal count areas and tables, not rows.",
+    "wornBy chanceEstimate: game-npc-loadouts items[].chance (each loadout pick assumed even there), the best of the actor's rows for the item (a row's requires condition there is not carried: its chance holds only under that condition); actors whose body is not lootable are left out, and items with no real name are listed only when an actor wears them. The top 12 actors by chance are kept (rows merged as for loot), wornByTotal counts them all.",
 ];
 
 const RARITIES: &[&str] = &["Common", "Uncommon", "Rare", "Epic", "Legendary"];
@@ -236,6 +244,8 @@ fn award_row(a: &ContractAward) -> Value {
 pub struct Inputs {
     pub datasets: Datasets,
     pub trades: Vec<Value>,
+    /// `game-npc-loadouts.json` `actors[]` (empty when the file is missing).
+    pub actors: Vec<Value>,
     pub extracted: Option<Value>,
     pub build: Option<Value>,
 }
@@ -279,13 +289,63 @@ fn squash(s: &str) -> String {
         .collect()
 }
 
-/// The dataset body (`items`, `summary`) for every non-template item.
+/// Lower-case item class -> (actor class, best chance) of every lootable actor wearing it,
+/// likeliest first, then by actor name.
+fn worn_by(actors: &[Value]) -> HashMap<String, Vec<(String, f64)>> {
+    let mut best: HashMap<String, HashMap<String, f64>> = HashMap::new();
+    for a in actors {
+        if a.get("lootable").and_then(Value::as_bool) == Some(false) {
+            continue;
+        }
+        let Some(actor) = a.get("class").and_then(Value::as_str) else {
+            continue;
+        };
+        for i in a
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let (Some(item), Some(chance)) = (
+                i.get("item").and_then(Value::as_str),
+                i.get("chance").and_then(Value::as_f64),
+            ) else {
+                continue;
+            };
+            let c = best
+                .entry(item.to_lowercase())
+                .or_default()
+                .entry(actor.to_string())
+                .or_insert(chance);
+            *c = c.max(chance);
+        }
+    }
+    best.into_iter()
+        .map(|(item, by)| {
+            let mut v: Vec<(String, f64)> = by.into_iter().collect();
+            v.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| crate::collate::compare_names(&a.0, &b.0))
+            });
+            (item, v)
+        })
+        .collect()
+}
+
+/// The dataset body (`items`, `summary`) for every non-template item, and every template
+/// item an NPC wears (gear with no real name is still gear).
 pub fn build_body(inputs: &Inputs) -> Map<String, Value> {
     let d = &inputs.datasets;
     let index = d.loot.as_ref().map(build_loot_index);
     let bulk = BulkObtain::new(d, index.as_ref());
     let used = used_tables(d);
-    let list: Vec<&ItemTags> = d.items.iter().filter(|i| !i.template()).collect();
+    let worn = worn_by(&inputs.actors);
+    let list: Vec<&ItemTags> = d
+        .items
+        .iter()
+        .filter(|i| !i.template() || worn.contains_key(&i.class_name.to_lowercase()))
+        .collect();
     let all_areas = bulk.areas_all(&list);
     let others: Vec<Vec<RollPath>> = list
         .par_iter()
@@ -342,9 +402,21 @@ pub fn build_body(inputs: &Inputs) -> Map<String, Value> {
         .enumerate()
         .map(|(i, t)| (*t, i))
         .collect();
+    // Actors of every kept wornBy row, sorted, listed once.
+    let actor_names: BTreeSet<&str> = list
+        .iter()
+        .filter_map(|i| worn.get(&i.class_name.to_lowercase()))
+        .flat_map(|v| v.iter().take(MAX_WORN_BY))
+        .map(|(a, _)| a.as_str())
+        .collect();
+    let actor_ix: HashMap<&str, usize> = actor_names
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (*a, i))
+        .collect();
 
     let mut items = Map::new();
-    let mut counts = [0usize; 9];
+    let mut counts = [0usize; 10];
     for (((item, areas), other), keys) in list.iter().zip(&all_areas).zip(&others).zip(&keys) {
         let cls = item.class_name.to_lowercase();
         let mut row = Map::new();
@@ -447,6 +519,21 @@ pub fn build_body(inputs: &Inputs) -> Map<String, Value> {
             );
             counts[7] += 1;
         }
+        if let Some(by) = worn.get(&cls).filter(|v| !v.is_empty()) {
+            row.insert(
+                "wornBy".into(),
+                Value::Array(merge_rows(
+                    by.iter()
+                        .take(MAX_WORN_BY)
+                        .map(|(a, c)| (actor_ix[a.as_str()], vec![json!(sig(*c))])),
+                    0,
+                )),
+            );
+            if by.len() > MAX_WORN_BY {
+                row.insert("wornByTotal".into(), json!(by.len()));
+            }
+            counts[9] += 1;
+        }
         if !row.is_empty() {
             items.insert(item.class_name.clone(), Value::Object(row));
         }
@@ -466,9 +553,11 @@ pub fn build_body(inputs: &Inputs) -> Map<String, Value> {
         "withContractAwards": counts[5],
         "withWikelo": counts[6],
         "withBlueprints": counts[7],
+        "withWornBy": counts[9],
         "lootRows": counts[8],
         "spawns": spawn_set.len(),
         "tables": table_names.len(),
+        "actors": actor_names.len(),
     });
     body.insert(
         "lootColumns".into(),
@@ -478,11 +567,13 @@ pub fn build_body(inputs: &Inputs) -> Map<String, Value> {
         "otherTableColumns".into(),
         json!(["tables", "perRollEstimate"]),
     );
+    body.insert("wornByColumns".into(), json!(["actors", "chanceEstimate"]));
     body.insert(
         "spawns".into(),
         Value::Array(spawn_set.into_values().collect()),
     );
     body.insert("tables".into(), json!(table_names));
+    body.insert("actors".into(), json!(actor_names));
     body.insert("items".into(), Value::Object(items));
     body.insert("summary".into(), summary);
     body
@@ -503,6 +594,7 @@ pub fn read_inputs(dir: &Path) -> Option<Inputs> {
     let sources = read_json(&dir.join("game-item-sources.json"))?;
     let blueprints = read_json(&dir.join("game-blueprints.json"));
     let wikelo = read_json(&dir.join("game-wikelo-trades.json"));
+    let loadouts = read_json(&dir.join("game-npc-loadouts.json"));
     let items: Vec<ItemTags> = typed(Some(&tags), "items")?;
     let loot: LootData = serde_json::from_value(loot).ok()?;
     let areas: Vec<LootArea> = typed(Some(&sources), "areas")?;
@@ -520,6 +612,7 @@ pub fn read_inputs(dir: &Path) -> Option<Inputs> {
             shops_as_of: None,
         },
         trades,
+        actors: typed(loadouts.as_ref(), "actors").unwrap_or_default(),
         extracted: sources.get("_extracted").cloned(),
         build: sources
             .get("_build")
@@ -650,6 +743,7 @@ mod tests {
             trades: vec![
                 json!({"name": "Trade_Helmet", "rewards": [{"item": "helmet", "amount": 1, "source": "award"}]}),
             ],
+            actors: vec![],
             extracted: None,
             build: Some(json!("4.10.201.1")),
         }
@@ -714,6 +808,74 @@ mod tests {
         assert_eq!(doc["spawns"][2]["area"], "v3slotpreset_bunker");
         assert_eq!(doc["lootColumns"][0], "spawns");
         assert_eq!(doc["otherTableColumns"][0], "tables");
+    }
+
+    #[test]
+    fn named_classes_roll_apart_and_worn_gear_lists_its_actors() {
+        let can = "LootGeneration/CanGenerateAsLoot";
+        let mut worn_tmpl = item("worn_tmpl", &[]);
+        worn_tmpl.is_template = Some(true);
+        let mut plain_tmpl = item("plain_tmpl", &[can]);
+        plain_tmpl.is_template = Some(true);
+        let loot: LootData = serde_json::from_value(json!({
+            "tables": [{"name": "unique", "version": "v3", "lootArchetypes": [{"name": "Unique", "weight": 1,
+                "archetype": {"entries": [{"name": "Scrip", "weight": 1,
+                    "selector": {"entityClasses": {"entityClasses": ["scrip"]}}}]}}]}]
+        }))
+        .unwrap();
+        let areas = vec![LootArea {
+            name: "caves".into(),
+            configs: vec![SpawnConfig {
+                name: None,
+                spawn_tags: vec![],
+                fill_chance: None,
+                slots: vec![SpawnSlot {
+                    entity: "crate".into(),
+                    entity_name: None,
+                    preset: None,
+                    weight: 1.0,
+                    loot: Some(SpawnLoot {
+                        table: "unique".into(),
+                        ..Default::default()
+                    }),
+                    contains: None,
+                }],
+            }],
+        }];
+        let inputs = Inputs {
+            datasets: Datasets {
+                // Same tags: only the named class rolls.
+                items: vec![
+                    item("scrip", &[can]),
+                    item("twin", &[can]),
+                    worn_tmpl,
+                    plain_tmpl,
+                ],
+                loot: Some(loot),
+                areas: Some(areas),
+                ..Default::default()
+            },
+            trades: vec![],
+            actors: vec![
+                json!({"class": "npc_a", "lootable": true, "items": [
+                    {"item": "worn_tmpl", "chance": 0.25}, {"item": "WORN_TMPL", "chance": 0.5},
+                    {"item": "scrip", "chance": 1}]}),
+                json!({"class": "npc_dead", "lootable": false, "items": [{"item": "twin", "chance": 1}]}),
+            ],
+            extracted: None,
+            build: None,
+        };
+        let doc = build_document(&inputs);
+        let items = &doc["items"];
+        assert_eq!(items["scrip"]["loot"], json!([[[0], "loot", 1.0, 1.0]]));
+        assert!(items["twin"].get("loot").is_none());
+        assert!(items["twin"].get("wornBy").is_none(), "unlootable body");
+        assert_eq!(doc["actors"], json!(["npc_a"]));
+        assert_eq!(items["worn_tmpl"]["wornBy"], json!([[[0], 0.5]]));
+        assert_eq!(items["scrip"]["wornBy"], json!([[[0], 1.0]]));
+        assert!(items.get("plain_tmpl").is_none(), "unworn template");
+        assert_eq!(doc["wornByColumns"], json!(["actors", "chanceEstimate"]));
+        assert_eq!(doc["summary"]["withWornBy"], json!(2));
     }
 
     #[test]

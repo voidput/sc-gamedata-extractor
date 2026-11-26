@@ -1968,6 +1968,25 @@ fn run_extract(command: &str, flags: &Flags, rest: &[String]) -> Result<ExitCode
     // Derived from item-tags + loot + item-sources (and blueprints, Wikelo trades), so
     // rebuilt after every run that leaves them on disk (removed when one is gone). A real
     // dataset (published, snapshotted, diffed), unlike the search index.
+    // Blueprint products and NPC gear the item-tags rows lack (untagged records), from the
+    // blueprints and loadouts on disk; before the obtain file, which lists them.
+    if let Some(r) =
+        sc_gamedata::domains::item_tags::add_identity_rows(&out, &records, &files.localization)
+            .map_err(|e| format!("{}: {e}", sc_gamedata::domains::item_tags::FILE))?
+    {
+        println!(
+            "item-tags   identity rows: {} blueprint, {} npcGear ({} not found)",
+            r.blueprint,
+            r.npc_gear,
+            r.not_found.len()
+        );
+        // The rows changed the file on disk, so it goes in the snapshot even when this
+        // run did not parse item-tags itself.
+        let file = sc_gamedata::domains::item_tags::FILE.to_string();
+        if !snapshot_files.contains(&file) {
+            snapshot_files.push(file);
+        }
+    }
     let started = std::time::Instant::now();
     if let Some(w) = sc_gamedata::item_obtain::write_item_obtain(&out)
         .map_err(|e| format!("{}: {e}", sc_gamedata::item_obtain::FILE))?
@@ -1980,6 +1999,17 @@ fn run_extract(command: &str, flags: &Flags, rest: &[String]) -> Result<ExitCode
             started.elapsed().as_secs_f64()
         );
         snapshot_files.push(sc_gamedata::item_obtain::FILE.to_string());
+    }
+    if let Some(w) = sc_gamedata::tag_index::write_tag_index(&out)
+        .map_err(|e| format!("{}: {e}", sc_gamedata::tag_index::FILE))?
+    {
+        println!(
+            "tag-index   {} ({} tags, {:.0} KB)",
+            w.file.display(),
+            w.tags,
+            w.bytes as f64 / 1024.0
+        );
+        snapshot_files.push(sc_gamedata::tag_index::FILE.to_string());
     }
     if rest.is_empty() {
         let file = write_strings(&out, &files.localization, "english", build.as_deref())?;
