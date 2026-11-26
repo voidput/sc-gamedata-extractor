@@ -254,6 +254,15 @@ fn extract(
         );
         write(strings::NAME, &output::to_js_json(&v))?;
     }
+    // The resource chain on game-commodities (mining-spawns, refining, blueprints, cargo).
+    if let Some(w) = sc_gamedata::resource_chain::write_resource_chain(out)
+        .map_err(|e| format!("{}: {e}", sc_gamedata::resource_chain::FILE))?
+    {
+        eprintln!("  rewrote {} (resource chain)", w.file.display());
+        for s in &w.skipped {
+            eprintln!("  WARNING  resource chain: {s}");
+        }
+    }
     // Derived from item-tags + loot + item-sources: same rule as the index.
     if let Some(w) = sc_gamedata::item_obtain::write_item_obtain(out)
         .map_err(|e| format!("{}: {e}", sc_gamedata::item_obtain::FILE))?

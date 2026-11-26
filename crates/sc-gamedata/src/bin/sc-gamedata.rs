@@ -1942,6 +1942,29 @@ fn run_extract(command: &str, flags: &Flags, rest: &[String]) -> Result<ExitCode
     // naming domains leaves it be.
     let mut snapshot_files: Vec<String> =
         written.iter().map(|(n, _)| format!("{n}.json")).collect();
+    // The resource chain on game-commodities, joined from mining-spawns, refining,
+    // blueprints and cargo of the same build beside it; rewritten after every run.
+    if let Some(w) = sc_gamedata::resource_chain::write_resource_chain(&out)
+        .map_err(|e| format!("{}: {e}", sc_gamedata::resource_chain::FILE))?
+    {
+        let c = &w.counts;
+        println!(
+            "chain       {} (minedAt {}, refinedBy {}, usedByBlueprints {}, inManifests {}, qualityOverrideBelts {})",
+            w.file.display(),
+            c.mined_at,
+            c.refined_by,
+            c.used_by_blueprints,
+            c.in_manifests,
+            c.quality_override_belts
+        );
+        for s in &w.skipped {
+            println!("  WARNING  resource chain: {s}");
+        }
+        let file = sc_gamedata::resource_chain::FILE.to_string();
+        if !snapshot_files.contains(&file) {
+            snapshot_files.push(file);
+        }
+    }
     // Derived from item-tags + loot + item-sources (and blueprints, Wikelo trades), so
     // rebuilt after every run that leaves them on disk (removed when one is gone). A real
     // dataset (published, snapshotted, diffed), unlike the search index.

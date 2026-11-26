@@ -13,7 +13,9 @@ use crate::collate::compare_names;
 use crate::domain::{Domain, DomainError, ParseContext, field};
 use crate::domains::commodities::{ResourceType, display_name_of, parse_resource_database};
 use crate::helpers_world::js_trim;
-use crate::localization::{Localization, lookup_string};
+use crate::localization::{
+    Localization, is_unresolved, loc_key, loc_key_str, localize_str, lookup_string,
+};
 use crate::records::{GameRecord, RecordSet, array, num, ref_short_name, str_};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -31,6 +33,9 @@ pub struct RefiningProcess {
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// String-table key of `displayName` (`processName`), in the table's spelling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_key: Option<String>,
     /// "Slow", "Normal" or "Fast". Despite the name, this tracks cost, not speed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<String>,
@@ -39,6 +44,10 @@ pub struct RefiningProcess {
     pub quality: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// String-table key of `description` (`<processName>_Desc`; the record names no
+    /// description key), so a consumer can refill the redacted text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description_key: Option<String>,
     /// The in-game rating, from the process's details string. Keys in the order the
     /// string names them (a JS object built by assignment), then the ranks.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,17 +111,32 @@ pub fn parse_ratings(details: Option<&str>) -> Option<Map<String, Value>> {
 pub fn parse_refining_process(record: &GameRecord, localization: &Localization) -> RefiningProcess {
     let v = &record.value;
     let key = str_(v.get("processName"));
+    let desc_ref = key.map(|k| format!("{k}_Desc"));
+    let description = desc_ref
+        .as_deref()
+        .and_then(|k| lookup_string(localization, k).map(|d| js_trim(d).to_string()));
+    // The record names its details key (`processDetail`, "@..._Details", which the table
+    // holds as "..._Details,P"); `<processName>_Details,P` is the fallback for records
+    // without one.
+    let details = str_(v.get("processDetail"))
+        .filter(|d| !d.is_empty())
+        .and_then(|d| localize_str(localization, d).filter(|t| !is_unresolved(Some(t))))
+        .or_else(|| key.and_then(|k| lookup_string(localization, &format!("{k}_Details,P"))));
     RefiningProcess {
         name: record.short_name.clone(),
         record_name: record.name.clone(),
         id: record.id.clone(),
         display_name: display_name_of(localization, v.get("processName")),
+        name_key: loc_key(localization, v.get("processName")).map(str::to_string),
         speed: str_(v.get("refiningSpeed")).map(str::to_string),
         quality: str_(v.get("refiningQuality")).map(str::to_string),
-        description: key.and_then(|k| {
-            lookup_string(localization, &format!("{k}_Desc")).map(|d| js_trim(d).to_string())
-        }),
-        ratings: key.and_then(|k| parse_ratings(lookup_string(localization, &format!("{k}_Details,P")))),
+        description_key: description
+            .is_some()
+            .then(|| desc_ref.as_deref().and_then(|k| loc_key_str(localization, k)))
+            .flatten()
+            .map(str::to_string),
+        description,
+        ratings: parse_ratings(details),
     }
 }
 
@@ -127,8 +151,14 @@ pub struct Refinable {
     pub refined_display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_description: Option<String>,
+    /// String-table key of `rawDescription` (the raw `ResourceType`'s `descriptionKey`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_description_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refined_description: Option<String>,
+    /// String-table key of `refinedDescription`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refined_description_key: Option<String>,
     pub group: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_density_grams_per_cc: Option<f64>,
@@ -225,7 +255,9 @@ impl Domain for Refining {
                     refined: to.clone(),
                     refined_display_name: refined.and_then(|x| x.display_name.clone()),
                     raw_description: r.description.clone(),
+                    raw_description_key: r.loc.description_key.clone(),
                     refined_description: refined.and_then(|x| x.description.clone()),
+                    refined_description_key: refined.and_then(|x| x.loc.description_key.clone()),
                     group: r.group.clone(),
                     raw_density_grams_per_cc: r.density_grams_per_cc,
                     refined_density_grams_per_cc: refined.and_then(|x| x.density_grams_per_cc),
@@ -395,5 +427,55 @@ mod tests {
             out["workloadTiers"],
             json!([{"level": "Low", "text": "No surcharge at this time."}])
         );
+        // Keys for the prose publish redacts; ratings without `processDetail` fall back to
+        // the `_Details,P` convention.
+        assert_eq!(p["nameKey"], "refinery_ui_ProcessingType_NormalWasteful");
+        assert_eq!(p["descriptionKey"], "refinery_ui_ProcessingType_NormalWasteful_Desc");
+    }
+
+    #[test]
+    fn reads_process_detail_and_omits_unresolved_description_key() {
+        let set = RecordSet::new(vec![rec(
+            "RefiningProcess",
+            "ProcessingType-FastCareful",
+            json!({"refiningSpeed": "Fast", "refiningQuality": "Careful",
+                   "processName": "@refinery_ui_ProcessingType_FastCareful",
+                   "processDetail": "@refinery_ui_Detail_Other"}),
+            None,
+        )]);
+        let mut loc = Localization::new();
+        loc.set("refinery_ui_ProcessingType_FastCareful", "Pyrometric Chromalysis");
+        // The table holds the record's details key with the `,P` suffix.
+        loc.set("refinery_ui_Detail_Other,P", "High Yield // High Cost // Fast");
+        loc.set(
+            "refinery_ui_ProcessingType_FastCareful_Details,P",
+            "Low Yield // Low Cost // Slowest",
+        );
+        let out = DOMAIN.parse(&ParseContext::new(&set, &loc, &NoFiles)).unwrap();
+        let p = &out["processes"][0];
+        assert_eq!(p["ratings"]["yield"], "High");
+        assert_eq!(p["ratings"]["speed"], "Fast");
+        assert_eq!(p["nameKey"], "refinery_ui_ProcessingType_FastCareful");
+        assert!(p.get("description").is_none());
+        assert!(p.get("descriptionKey").is_none());
+    }
+
+    #[test]
+    fn refinables_carry_description_keys() {
+        let mut db = database();
+        let groups = &mut db.value["groups"];
+        groups[0]["resources"][0]["description"] = json!("@items_commodities_gold_desc");
+        groups[0]["groups"][1]["resources"][0]["description"] =
+            json!("@items_commodities_gold_ore_desc");
+        let set = RecordSet::new(vec![db]);
+        let mut loc = strings();
+        loc.set("items_commodities_gold_desc", "Refined gold.");
+        loc.set("items_commodities_gold_ore_desc", "Gold ore.");
+        let out = DOMAIN.parse(&ParseContext::new(&set, &loc, &NoFiles)).unwrap();
+        let r = &out["refinables"][0];
+        assert_eq!(r["rawDescription"], "Gold ore.");
+        assert_eq!(r["rawDescriptionKey"], "items_commodities_gold_ore_desc");
+        assert_eq!(r["refinedDescription"], "Refined gold.");
+        assert_eq!(r["refinedDescriptionKey"], "items_commodities_gold_desc");
     }
 }
