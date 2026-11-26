@@ -152,6 +152,42 @@ fn pick_stats(params: &Map<String, Value>, fields: &[&str]) -> Map<String, Value
     stats
 }
 
+/// `splineJumpParams` fields read beside `splineDriveSpeed`: every gameplay number of the
+/// struct (the `VFX*` / `ShaderNode*` presentation velocities, interactions, states and
+/// effect tags are left out). Published raw as `spline` + the field name, after
+/// `splineDriveSpeed`. The records do not state when a drive uses these instead of
+/// `params`, so nothing is computed from them.
+const SPLINE_JUMP_FIELDS: &[&str] = &[
+    "cooldownTime",
+    "stageOneAccelRate",
+    "stageTwoAccelRate",
+    "engageSpeed",
+    "spoolUpTime",
+    "interdictionEffectTime",
+    "calibrationRate",
+    "minCalibrationRequirement",
+    "maxCalibrationRequirement",
+    "calibrationProcessAngleLimit",
+    "calibrationWarningAngleLimit",
+    "calibrationDelayInSeconds",
+];
+
+/// Appends `splineJumpParams` ([`SPLINE_JUMP_FIELDS`]) to a quantum drive's stats as
+/// `splineCooldownTime`, `splineStageOneAccelRate`, ...
+fn spline_jump_stats(params: &Map<String, Value>, stats: &mut Map<String, Value>) {
+    for f in SPLINE_JUMP_FIELDS {
+        if let Some(v) = num(at_map(params, &format!("splineJumpParams.{f}"))) {
+            let mut key = String::from("spline");
+            let mut chars = f.chars();
+            if let Some(first) = chars.next() {
+                key.extend(first.to_uppercase());
+                key.push_str(chars.as_str());
+            }
+            stats.insert(key, number(v));
+        }
+    }
+}
+
 /// `pickNumeric`: every top-level number on a struct.
 fn pick_numeric(params: &Map<String, Value>) -> Map<String, Value> {
     params
@@ -272,6 +308,7 @@ const CATEGORIES: &[Category] = &[
             if let Some(spline) = num(at_map(s, "splineJumpParams.driveSpeed")) {
                 stats.insert("splineDriveSpeed".into(), number(spline));
             }
+            spline_jump_stats(s, &mut stats);
             Parsed::stats(stats)
         },
     },
@@ -877,6 +914,28 @@ mod tests {
         );
         let c = parse_component(&drive, &localization(), None).unwrap();
         assert_eq!(Value::Object(c.stats), json!({"driveSpeed": 161410900.0, "spoolUpTime": 4.4}));
+    }
+
+    #[test]
+    fn reads_spline_jump_params_after_spline_drive_speed() {
+        let drive = ship_item(
+            "QDRV_Test",
+            "SCItemQuantumDriveParams",
+            json!({"params": {"driveSpeed": 2.0e8},
+                "splineJumpParams": {"driveSpeed": 400000, "cooldownTime": 22.14,
+                    "stageOneAccelRate": 250, "stageTwoAccelRate": 50000, "engageSpeed": 1500,
+                    "VFXPinchEffectTime": 2.5, "spoolUpTime": 6, "calibrationDelayInSeconds": 1.5}}),
+            "@item_NameShield",
+        );
+        let c = parse_component(&drive, &localization(), None).unwrap();
+        assert_eq!(
+            Value::Object(c.stats).to_string(),
+            json!({"driveSpeed": 2.0e8, "splineDriveSpeed": 400000.0, "splineCooldownTime": 22.14,
+                "splineStageOneAccelRate": 250.0, "splineStageTwoAccelRate": 50000.0,
+                "splineEngageSpeed": 1500.0, "splineSpoolUpTime": 6.0,
+                "splineCalibrationDelayInSeconds": 1.5})
+            .to_string()
+        );
     }
 
     #[test]

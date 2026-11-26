@@ -118,6 +118,10 @@ pub struct Location {
     /// The root of the chain, normally the star system.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    /// Planets and moons: metres from the centre at which a quantum jump may start,
+    /// `size` + the global `minimumAltitudeForQuantum`. See [`QUANTUM_START_ASSUMPTIONS`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub minimum_quantum_start_estimate: Option<f64>,
 }
 
 /// Used when the MonitoredZone entity record was not extracted.
@@ -277,7 +281,31 @@ pub fn parse_location(
         jammer_radius: None,
         path: None,
         system: None,
+        minimum_quantum_start_estimate: None,
     }
+}
+
+/// The dataset's `_assumptions` note for [`Location::minimum_quantum_start_estimate`].
+pub const QUANTUM_START_ASSUMPTIONS: &str = "locations[].minimumQuantumStartEstimate = size + QuantumDriveGlobalParams.minimumAltitudeForQuantum (metres from the centre), planets and moons only. The record does not state that size is a radius; that is snares' reading. Terrain height and atmosphere (maximumAtmosphericPressureForQuantum) are not counted.";
+
+/// Fills [`Location::minimum_quantum_start_estimate`] on planets and moons with a `size`,
+/// from the extract's `QuantumDriveGlobalParams`. True when any location got one.
+fn quantum_start_estimates(locations: &mut [Location], records: &RecordSet) -> bool {
+    let Some(altitude) = records
+        .iter()
+        .find(|r| r.ty == "QuantumDriveGlobalParams")
+        .and_then(|r| crate::domains::quantum::parse_quantum_rules(r).minimum_altitude_for_quantum)
+    else {
+        return false;
+    };
+    let mut any = false;
+    for l in locations.iter_mut().filter(|l| is_body(l)) {
+        if let Some(size) = l.size.filter(|s| *s > 0.0) {
+            l.minimum_quantum_start_estimate = Some(size + altitude);
+            any = true;
+        }
+    }
+    any
 }
 
 fn is_body(l: &Location) -> bool {
@@ -461,6 +489,7 @@ impl Domain for Starmap {
             "**/entities/monitoredzone",
             "**/mission_entities/monitorzonejammer",
             "**/starmapamenitytypes/**",
+            "**/globalquantumdriveparams/**",
         ]
     }
 
@@ -483,7 +512,8 @@ impl Domain for Starmap {
         for w in containers.warnings.drain(..) {
             ctx.warn(w);
         }
-        let locations = build_locations(ctx.records, ctx.localization, &placements, &zones, &spins);
+        let mut locations = build_locations(ctx.records, ctx.localization, &placements, &zones, &spins);
+        let estimated = quantum_start_estimates(&mut locations, ctx.records);
 
         let visible: Vec<&Location> = locations
             .iter()
@@ -519,6 +549,9 @@ impl Domain for Starmap {
         });
 
         let mut body = Map::new();
+        if estimated {
+            body.insert("_assumptions".into(), json!([QUANTUM_START_ASSUMPTIONS]));
+        }
         field(&mut body, "locations", &locations)?;
         body.insert("byType".into(), Value::Object(by_type));
         body.insert("summary".into(), summary);
@@ -616,6 +649,48 @@ pub(crate) mod tests {
         assert_eq!(l.hidden_in_starmap, Some(true));
         assert_eq!(l.is_scannable, Some(false));
         assert_eq!(l.quantum.as_ref().unwrap().obstruction_radius, Some(5.0));
+    }
+
+    #[test]
+    fn quantum_start_is_size_plus_the_global_minimum_altitude_on_bodies_only() {
+        let set = RecordSet::new(vec![
+            rec(
+                "StarMapObjectTypes",
+                "starmap/types",
+                json!({"types": [{"_RecordId_": "u-1", "name": "Planet"}, {"_RecordId_": "u-2", "name": "Manmade"}]}),
+                None,
+            ),
+            rec(
+                "StarMapObject",
+                "starmap/pu/p",
+                json!({"name": "P", "type": {"_RecordName_": "StarMapObjectType.u-1"}, "size": 295167}),
+                Some("P"),
+            ),
+            rec(
+                "StarMapObject",
+                "starmap/pu/s",
+                json!({"name": "S", "type": {"_RecordName_": "StarMapObjectType.u-2"}, "size": 500}),
+                Some("S"),
+            ),
+        ]);
+        let mut locations = build_locations(&set, &Localization::new(), &none(), &none(), &none());
+        assert!(!quantum_start_estimates(&mut locations, &set), "no global params, no estimate");
+
+        let mut records: Vec<GameRecord> = set.iter().cloned().collect();
+        records.push(rec(
+            "QuantumDriveGlobalParams",
+            "globalquantumdriveparams/global",
+            json!({"minimumAltitudeForQuantum": 2000}),
+            None,
+        ));
+        let set = RecordSet::new(records);
+        let mut locations = build_locations(&set, &Localization::new(), &none(), &none(), &none());
+        assert!(quantum_start_estimates(&mut locations, &set));
+        let by = |n: &str| locations.iter().find(|l| l.name == n).unwrap();
+        assert_eq!(by("P").minimum_quantum_start_estimate, Some(297_167.0));
+        assert_eq!(by("S").minimum_quantum_start_estimate, None, "not a planet or moon");
+        let json = serde_json::to_value(by("P")).unwrap();
+        assert_eq!(json["minimumQuantumStartEstimate"], json!(297_167.0));
     }
 
     #[test]
