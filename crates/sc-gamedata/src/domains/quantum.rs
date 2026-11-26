@@ -73,6 +73,9 @@ impl Domain for Quantum {
     fn name(&self) -> &'static str {
         "game-quantum"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Global quantum travel rules: minimum altitude, atmosphere limit, link range."

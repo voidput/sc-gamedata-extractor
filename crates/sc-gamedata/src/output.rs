@@ -17,16 +17,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// `_source` of every game-file dataset.
 pub const SOURCE: &str = "Star Citizen game files via StarBreaker";
 
+/// `_schema` of a dataset: `"<name>@<version>"`, `game-ships@1`.
+pub fn schema_tag(name: &str, version: u32) -> String {
+    format!("{name}@{version}")
+}
+
 /// The header plus the body's own keys, in that order (`{_source, _extracted, ..._build,
-/// ...body}`). A body key repeating a header key overwrites its value in place, as the
-/// object spread does.
-pub fn envelope(body: Map<String, Value>, extracted: &str, build: Option<&str>) -> Value {
+/// _schema, ...body}`). A body key repeating a header key overwrites its value in place, as
+/// the object spread does.
+pub fn envelope(
+    body: Map<String, Value>,
+    extracted: &str,
+    build: Option<&str>,
+    schema: &str,
+) -> Value {
     let mut out = Map::new();
     out.insert("_source".into(), Value::String(SOURCE.into()));
     out.insert("_extracted".into(), Value::String(extracted.into()));
     if let Some(b) = build {
         out.insert("_build".into(), Value::String(b.into()));
     }
+    out.insert("_schema".into(), Value::String(schema.into()));
     for (k, v) in body {
         out.insert(k, v);
     }
@@ -312,11 +323,16 @@ mod tests {
     fn header_comes_first() {
         let mut body = Map::new();
         body.insert("rows".into(), json!([]));
-        let e = envelope(body, "2026-01-01T00:00:00.000Z", Some("4.10"));
+        let e = envelope(body, "2026-01-01T00:00:00.000Z", Some("4.10"), "game-x@1");
         let keys: Vec<_> = e.as_object().unwrap().keys().cloned().collect();
-        assert_eq!(keys, vec!["_source", "_extracted", "_build", "rows"]);
-        let e = envelope(Map::new(), "t", None);
+        assert_eq!(
+            keys,
+            vec!["_source", "_extracted", "_build", "_schema", "rows"]
+        );
+        assert_eq!(e["_schema"], "game-x@1");
+        let e = envelope(Map::new(), "t", None, "game-x@1");
         assert!(e.get("_build").is_none());
+        assert_eq!(schema_tag("game-ships", 2), "game-ships@2");
     }
 
     #[test]

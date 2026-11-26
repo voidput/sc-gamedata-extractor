@@ -187,7 +187,12 @@ pub fn run(domain: &dyn Domain, game: &Game<'_>, extracted: &str) -> Result<Data
     warnings.extend(empty_collection_warnings(domain.name(), &body));
     Ok(Dataset {
         name: domain.name(),
-        value: output::envelope(body, extracted, game.build.as_deref()),
+        value: output::envelope(
+            body,
+            extracted,
+            game.build.as_deref(),
+            &output::schema_tag(domain.name(), domain.schema_version()),
+        ),
         warnings,
     })
 }
@@ -264,6 +269,44 @@ mod tests {
         assert!(names(&["**/entities/monitoredzone"]).is_empty());
         // No filters: no records (archive-file domains), not every extracted one.
         assert!(names(&[]).is_empty());
+    }
+
+    /// Every registered domain's file (`<name>.json`) carries `_schema: "<stem>@<n>"`,
+    /// right after `_build`, with `<n>` its declared version.
+    #[test]
+    fn every_domain_stamps_its_schema_after_build() {
+        let records = FixtureSource::from_envelopes(Vec::new()).unwrap();
+        let loc = Localization::default();
+        let game = Game {
+            records: &records,
+            localization: &loc,
+            files: &crate::domain::NoFiles,
+            build: Some("4.10.201.48085".into()),
+        };
+        let domains = crate::domains::all();
+        assert!(domains.len() >= 30);
+        for d in domains {
+            let ds = run(d, &game, "t").unwrap_or_else(|e| panic!("{}: {e}", d.name()));
+            let file = format!("{}.json", ds.name);
+            let stem = file.strip_suffix(".json").unwrap();
+            assert!(d.schema_version() >= 1, "{file}");
+            assert_eq!(
+                ds.value["_schema"],
+                format!("{stem}@{}", d.schema_version()),
+                "{file}"
+            );
+            let keys: Vec<&String> = ds.value.as_object().unwrap().keys().take(4).collect();
+            assert_eq!(
+                keys,
+                ["_source", "_extracted", "_build", "_schema"],
+                "{file}"
+            );
+            assert!(
+                ds.to_json()
+                    .contains("\"_build\": \"4.10.201.48085\",\n  \"_schema\": "),
+                "{file}"
+            );
+        }
     }
 
     #[test]

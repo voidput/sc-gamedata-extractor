@@ -190,6 +190,9 @@ impl Domain for Mining {
     fn name(&self) -> &'static str {
         "game-mining"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Mineable element physics and mining laser/module modifiers."

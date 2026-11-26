@@ -313,6 +313,9 @@ impl Domain for Consumables {
     fn name(&self) -> &'static str {
         "game-consumables"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Medpens, drugs, food and drink with their total health, stat and buff effects."

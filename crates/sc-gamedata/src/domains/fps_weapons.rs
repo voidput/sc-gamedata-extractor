@@ -83,6 +83,9 @@ impl Domain for FpsWeapons {
     fn name(&self) -> &'static str {
         "game-fps-weapons"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Personal ranged and melee weapons."

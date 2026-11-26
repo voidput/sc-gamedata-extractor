@@ -96,6 +96,9 @@ impl Domain for Reputation {
     fn name(&self) -> &'static str {
         "game-reputation"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Faction and guild reputation ranks with their thresholds."

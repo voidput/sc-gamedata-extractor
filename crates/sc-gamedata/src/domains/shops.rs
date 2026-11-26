@@ -171,6 +171,9 @@ impl Domain for Shops {
     fn name(&self) -> &'static str {
         "game-shops"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Global shop rules: sell-back cuts, supply and demand bands, auto-loading fees."

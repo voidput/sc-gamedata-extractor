@@ -45,6 +45,7 @@ fn manufacturers_file_is_byte_exact() {
   "_source": "Star Citizen game files via StarBreaker",
   "_extracted": "2026-11-12T18:18:38.829Z",
   "_build": "4.10.200.58746",
+  "_schema": "game-manufacturers@1",
   "manufacturers": [
     {
       "code": "987",

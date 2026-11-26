@@ -237,6 +237,9 @@ impl Domain for Cargo {
     fn name(&self) -> &'static str {
         "game-cargo"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "NPC and mission cargo manifests, and freight loading timings."

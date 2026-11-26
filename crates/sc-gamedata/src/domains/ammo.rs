@@ -264,6 +264,9 @@ impl Domain for AmmoDomain {
     fn name(&self) -> &'static str {
         "game-ammo"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Ammunition damage, projectile speed and range. Join to weapons for DPS."

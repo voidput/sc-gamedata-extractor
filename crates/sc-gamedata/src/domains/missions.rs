@@ -135,6 +135,9 @@ impl Domain for Missions {
     fn name(&self) -> &'static str {
         "game-missions"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Mission broker contracts with payouts, givers and difficulty."

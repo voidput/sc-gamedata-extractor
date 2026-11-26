@@ -85,6 +85,9 @@ impl Domain for Loot {
     fn name(&self) -> &'static str {
         "game-loot"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Loot tables and archetypes with weights, by tag, plus pool filters and holiday loot."

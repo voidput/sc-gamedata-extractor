@@ -1228,6 +1228,9 @@ impl Domain for NpcLoadoutsDomain {
     fn name(&self) -> &'static str {
         NAME
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "What each NPC type can spawn wearing and wielding, from its loadout records (even picks assumed)."

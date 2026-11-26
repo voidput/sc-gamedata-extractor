@@ -20,7 +20,7 @@
 //! still count areas and tables, not rows. Shape:
 //!
 //! ```text
-//! { _source, _extracted, _build, _assumptions[],
+//! { _source, _extracted, _build, _schema, _assumptions[],
 //!   lootColumns: ["spawns", "kind", "scoreEstimate", "perRollEstimate"],
 //!   otherTableColumns: ["tables", "perRollEstimate"],
 //!   spawns[]{area, config, entity, entityName, table, slotShare, fillChance, chance,
@@ -53,6 +53,9 @@ use std::path::{Path, PathBuf};
 pub const NAME: &str = "game-item-obtain";
 /// Output file name.
 pub const FILE: &str = "game-item-obtain.json";
+/// `_schema` version (`game-item-obtain@1`; bump rule:
+/// [`crate::domain::Domain::schema_version`]).
+pub const SCHEMA_VERSION: u32 = 1;
 /// Loot rows (areas) kept per item; the rest are counted in `areasTotal`.
 pub const MAX_LOOT: usize = 12;
 /// Tables no area rolls kept per item; the rest are counted in `otherTablesTotal`.
@@ -535,6 +538,10 @@ pub fn build_document(inputs: &Inputs) -> Value {
     if let Some(b) = &inputs.build {
         doc.insert("_build".into(), b.clone());
     }
+    doc.insert(
+        "_schema".into(),
+        json!(crate::output::schema_tag(NAME, SCHEMA_VERSION)),
+    );
     doc.extend(build_body(inputs));
     Value::Object(doc)
 }
@@ -688,6 +695,7 @@ mod tests {
         );
         assert_eq!(doc["summary"]["items"], json!(3));
         assert_eq!(doc["_build"], "4.10.201.1");
+        assert_eq!(doc["_schema"], "game-item-obtain@1");
     }
 
     #[test]

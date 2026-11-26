@@ -747,6 +747,40 @@ fn release_edit_line(plan: &publish::PublishPlan) -> String {
     shell_line(&args)
 }
 
+/// `gh release upload <tag> build.json --clobber`, run from the dumps checkout, so the
+/// release carries the tag's manifest as an asset.
+fn release_upload_line(plan: &publish::PublishPlan) -> String {
+    shell_line(&[
+        "gh".into(),
+        "release".into(),
+        "upload".into(),
+        plan.build.clone(),
+        "build.json".into(),
+        "--clobber".into(),
+        "-R".into(),
+        plan.repo.clone(),
+    ])
+}
+
+/// The upload, only when the checkout is at the tag (its `build.json` is then the tag's
+/// blob; after an "already published" stop, main may have moved on to a later build).
+fn release_upload_block(plan: &publish::PublishPlan) -> String {
+    let work_dir = plan.work_dir.to_string_lossy().into_owned();
+    let cd = shell_line(&["cd".into(), work_dir]);
+    let tag_commit = shell_line(&[format!("{}^{{commit}}", plan.build)]);
+    let skip = shell_line(&[
+        "echo".into(),
+        format!(
+            "build.json: the checkout is not at {}; release asset not uploaded.",
+            plan.build
+        ),
+    ]);
+    format!(
+        "{cd}\nif [ \"$(git rev-parse HEAD)\" = \"$(git rev-parse {tag_commit})\" ]; then\n  {}\nelse\n  {skip}\nfi\n",
+        release_upload_line(plan)
+    )
+}
+
 fn print_release_steps(plan: &publish::PublishPlan, edit: bool) {
     println!("\nrelease (run yourself; this tool does not call gh):");
     if edit {
@@ -757,11 +791,14 @@ fn print_release_steps(plan: &publish::PublishPlan, edit: bool) {
         plan.build, plan.repo
     );
     println!("{}", release_create_line(plan));
+    println!("# then, from {}:", plan.work_dir.display());
+    println!("{}", release_upload_line(plan));
 }
 
 /// The script's GitHub release steps as a POSIX shell script, for `make publish` to run:
 /// `gh release edit` first when the build was republished, then `ensureRelease` (create
-/// the release unless `gh release view` finds one). This tool never runs it.
+/// the release unless `gh release view` finds one), then `gh release upload <tag>
+/// build.json --clobber` from the dumps checkout. This tool never runs it.
 fn release_script(plan: &publish::PublishPlan, edit: bool) -> String {
     let view = shell_line(&[
         "gh".into(),
@@ -787,6 +824,7 @@ fn release_script(plan: &publish::PublishPlan, edit: bool) -> String {
         "if {view} >/dev/null 2>&1; then\n  {exists}\nelse\n  {}\nfi\n",
         release_create_line(plan)
     ));
+    script.push_str(&release_upload_block(plan));
     script
 }
 
@@ -1577,6 +1615,10 @@ fn write_strings(
             output::SOURCE
         ));
         value["language"] = json!(language);
+        value["_schema"] = json!(output::schema_tag(
+            &format!("game-strings-{language}"),
+            strings::SCHEMA_VERSION
+        ));
     }
     let file = out.join(format!("game-strings-{language}.json"));
     std::fs::write(&file, output::to_js_json(&value))
@@ -2421,13 +2463,17 @@ mod tests {
             build: "5.0.202.35026".into(),
             repo: "voidput/sc-gamedata-dumps".into(),
             remote: String::new(),
-            work_dir: PathBuf::new(),
+            work_dir: PathBuf::from("/tmp/dumps checkout"),
             origin: publish::Origin {
                 channel: "PTU".into(),
                 branch: Some("sc-alpha-5.0.0".into()),
             },
             patch: None,
             republish: false,
+            extractor: publish::Extractor {
+                commit: "c".into(),
+                dirty: false,
+            },
             dumps: Vec::new(),
             notes: publish::PublishNotes::Skipped(String::new()),
             warnings: Vec::new(),
@@ -2439,10 +2485,16 @@ mod tests {
         assert!(fresh.contains(
             "if gh release view 5.0.202.35026 -R voidput/sc-gamedata-dumps >/dev/null 2>&1; then\n  echo 'Release 5.0.202.35026 already exists.'\nelse\n  gh release create 5.0.202.35026 -R voidput/sc-gamedata-dumps --verify-tag --title '5.0.0 PTU (5.0.202.35026)' --notes "
         ));
-        assert!(fresh.trim_end().ends_with("--prerelease\nfi"));
+        assert!(fresh.contains("--prerelease\nfi\n"));
+        // build.json goes up after the release exists, from the checkout, at the tag only.
+        let upload = fresh.find("gh release upload 5.0.202.35026 build.json --clobber -R voidput/sc-gamedata-dumps\n").unwrap();
+        assert!(fresh.find("gh release create").unwrap() < upload);
+        assert!(fresh.contains("\ncd '/tmp/dumps checkout'\nif [ \"$(git rev-parse HEAD)\" = \"$(git rev-parse '5.0.202.35026^{commit}')\" ]; then\n  gh release upload"));
+        assert!(fresh.ends_with("release asset not uploaded.'\nfi\n"));
         let edited = release_script(&plan, true);
         let edit = edited.find("gh release edit 5.0.202.35026").unwrap();
         assert!(edit < edited.find("gh release view").unwrap());
+        assert!(edited.contains("gh release upload 5.0.202.35026 build.json --clobber"));
     }
 
     #[test]

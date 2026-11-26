@@ -662,6 +662,9 @@ impl Domain for Components {
     fn name(&self) -> &'static str {
         "game-ship-components"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Ship shields, quantum drives, power plants, coolers, radars, thrusters, fuel tanks, armour, cargo grids and more, with their stats."

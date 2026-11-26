@@ -9,16 +9,18 @@
 //! - [`stage`] clones or fetches the checkout, writes the template files, `data/` and
 //!   `notes/`, commits and tags, and pushes only when told to.
 //!
-//! Creating or editing the GitHub release (`gh release ...`) stays in the TypeScript
-//! script; [`release_title`], [`release_flags`] and [`release_notes`] are its inputs.
+//! Creating or editing the GitHub release (`gh release ...`, then uploading `build.json`
+//! as a release asset) is the shell script `publish --gh-script` writes; this module never
+//! runs gh. [`release_title`], [`release_flags`] and [`release_notes`] are its inputs.
 
 use crate::diff::{
     BuildSource, Error, Result, js_string, js_to_number, js_truthy, normalize_numbers, sort_utf16,
 };
 use crate::localization::redaction::redact_dump;
 use crate::notes::{NotesOptions, notes_against, render_notes};
-use crate::output::{js_key_order, to_js_json_compact};
+use crate::output::{js_key_order, to_js_json, to_js_json_compact};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -98,6 +100,54 @@ pub enum PublishNotes {
     Skipped(String),
 }
 
+/// What produced the data: the sc-gamedata checkout that publishes (`build.json`
+/// `extractor`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Extractor {
+    /// `git rev-parse HEAD`.
+    pub commit: String,
+    /// `git status --porcelain --untracked-files=no` lists something; written only when
+    /// true, and a reader refuses the whole tag then.
+    pub dirty: bool,
+}
+
+/// [`Extractor`] of the checkout at `root`.
+pub fn extractor_of(root: &Path) -> Result<Extractor> {
+    let commit = git(root, &["rev-parse", "HEAD"]).map_err(|e| {
+        Error::Message(format!(
+            "Cannot read the extractor commit of {} (build.json records it): {e}",
+            root.display()
+        ))
+    })?;
+    let dirty = !git(root, &["status", "--porcelain", "--untracked-files=no"])?.is_empty();
+    Ok(Extractor { commit, dirty })
+}
+
+/// One `build.json` `files[]` entry: a `data/game-*.json` as written to the checkout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestFile {
+    /// `data/game-ships.json`
+    pub name: String,
+    /// Lower-case hex sha256 of the bytes on disk (after redaction).
+    pub sha256: String,
+    pub bytes: usize,
+    /// The file's `_schema`; left out when it has none.
+    pub schema: Option<String>,
+}
+
+impl ManifestFile {
+    /// The entry for `data/<file>` holding exactly `bytes`.
+    pub fn of(file: &str, bytes: &[u8], schema: Option<&str>) -> Self {
+        let digest = Sha256::digest(bytes);
+        Self {
+            name: format!("data/{file}"),
+            sha256: digest.iter().map(|b| format!("{b:02x}")).collect(),
+            bytes: bytes.len(),
+            schema: schema.map(str::to_string),
+        }
+    }
+}
+
 /// Everything a publish would write, before touching the checkout.
 #[derive(Debug, Clone)]
 pub struct PublishPlan {
@@ -108,6 +158,8 @@ pub struct PublishPlan {
     pub origin: Origin,
     pub patch: Option<String>,
     pub republish: bool,
+    /// The checkout this publish runs from ([`PublishOptions::root`]).
+    pub extractor: Extractor,
     pub dumps: Vec<Dump>,
     pub notes: PublishNotes,
     /// What the script prints to stderr, in order.
@@ -277,21 +329,47 @@ pub fn release_title(build: &str, origin: &Origin, patch: Option<&str>) -> Strin
     }
 }
 
-/// `buildManifest`: `build.json` at the dumps root, which the fan-out workflow reads.
-/// Keys in the script's order, two-space indent, trailing newline; no timestamp, so an
-/// identical republish stays identical.
-pub fn build_manifest(build: &str, origin: &Origin, patch: Option<&str>) -> String {
+/// `build.json` at the dumps root: the per-tag manifest the fan-out workflow and the
+/// starorg-codex dump reader read. `{build, channel, patch, branch, extractor: {commit[,
+/// dirty]}, files: [{name, sha256, bytes, schema}]}`, `files` sorted by name; two-space
+/// indent, trailing newline. No timestamp, so an identical republish stays identical.
+pub fn build_manifest(
+    build: &str,
+    origin: &Origin,
+    patch: Option<&str>,
+    extractor: &Extractor,
+    files: &[ManifestFile],
+) -> String {
     let patch = patch.or_else(|| origin.branch.as_deref().and_then(first_version));
-    let s = |v: Option<&str>| {
-        v.map_or_else(|| "null".to_string(), |v| Value::String(v.into()).to_string())
-    };
-    format!(
-        "{{\n  \"build\": {},\n  \"channel\": {},\n  \"patch\": {},\n  \"branch\": {}\n}}\n",
-        s(Some(build)),
-        s(Some(&origin.channel)),
-        s(patch),
-        s(origin.branch.as_deref()),
-    )
+    let text = |v: Option<&str>| v.map_or(Value::Null, |v| Value::String(v.into()));
+    let mut ext = Map::new();
+    ext.insert("commit".into(), Value::String(extractor.commit.clone()));
+    if extractor.dirty {
+        ext.insert("dirty".into(), Value::Bool(true));
+    }
+    let mut sorted: Vec<&ManifestFile> = files.iter().collect();
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    let entries: Vec<Value> = sorted
+        .into_iter()
+        .map(|f| {
+            let mut e = Map::new();
+            e.insert("name".into(), Value::String(f.name.clone()));
+            e.insert("sha256".into(), Value::String(f.sha256.clone()));
+            e.insert("bytes".into(), Value::from(f.bytes));
+            if let Some(schema) = &f.schema {
+                e.insert("schema".into(), Value::String(schema.clone()));
+            }
+            Value::Object(e)
+        })
+        .collect();
+    let mut m = Map::new();
+    m.insert("build".into(), text(Some(build)));
+    m.insert("channel".into(), text(Some(&origin.channel)));
+    m.insert("patch".into(), text(patch));
+    m.insert("branch".into(), text(origin.branch.as_deref()));
+    m.insert("extractor".into(), Value::Object(ext));
+    m.insert("files".into(), Value::Array(entries));
+    format!("{}\n", to_js_json(&Value::Object(m)))
 }
 
 /// `releaseFlags`: `--prerelease` for test channels, `--latest` only for LIVE.
@@ -525,6 +603,7 @@ pub fn plan(opts: &PublishOptions) -> Result<PublishPlan> {
 
     let dumps = read_dumps(&data_dir)?;
     let build = resolve_build(&dumps)?;
+    let extractor = extractor_of(root)?;
     let marker: Option<Value> = std::fs::read(extract_dir.join("_build.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
@@ -543,6 +622,7 @@ pub fn plan(opts: &PublishOptions) -> Result<PublishPlan> {
         origin,
         patch: opts.patch.clone(),
         republish: opts.republish,
+        extractor,
         dumps,
         notes,
         warnings,
@@ -576,6 +656,15 @@ fn render_listing(plan: &PublishPlan) -> String {
         "Release: {} [{}]",
         plan.title(),
         release_flags(&plan.origin).join(" ")
+    ));
+    line(format!(
+        "Extractor: {}{}",
+        plan.extractor.commit,
+        if plan.extractor.dirty {
+            " (dirty: true, readers refuse the tag)"
+        } else {
+            ""
+        }
     ));
     line(format!("Files:  {}\n", plan.dumps.len()));
     for d in &plan.dumps {
@@ -624,7 +713,7 @@ fn render_notes_listing(notes: &PublishNotes) -> String {
     out
 }
 
-/// `publish-dump.mjs --dry-run` stdout, byte for byte.
+/// The `--dry-run` stdout (`publish-dump.mjs`'s, plus the `Extractor:` line).
 pub fn render_dry_run(plan: &PublishPlan) -> String {
     let mut out = render_listing(plan);
     out.push_str(&render_notes_listing(&plan.notes));
@@ -649,8 +738,9 @@ pub enum StageOutcome {
 }
 
 /// The non-dry-run part of the script up to (not including) the GitHub release: clone or
-/// fetch `work_dir`, copy the template files that are missing, rewrite `data/`, write this
-/// build's `notes/` pair, commit, tag, and push only when `push` is true.
+/// fetch `work_dir`, copy the template files that are missing, rewrite `data/`, then
+/// `build.json` (hashing the `data/` bytes just written), write this build's `notes/` pair,
+/// commit, tag, and push only when `push` is true.
 pub fn stage(plan: &PublishPlan, work_dir: &Path, push: bool) -> Result<StageOutcome> {
     let build = plan.build.as_str();
     let io = |p: &Path| {
@@ -706,21 +796,32 @@ pub fn stage(plan: &PublishPlan, work_dir: &Path, push: bool) -> Result<StageOut
             std::fs::write(&target, body).map_err(io(&target))?;
         }
     }
-    let manifest = work_dir.join("build.json");
-    std::fs::write(
-        &manifest,
-        build_manifest(build, &plan.origin, plan.patch.as_deref()),
-    )
-    .map_err(io(&manifest))?;
     let out_dir = work_dir.join("data");
     if out_dir.exists() {
         std::fs::remove_dir_all(&out_dir).map_err(io(&out_dir))?;
     }
     std::fs::create_dir_all(&out_dir).map_err(io(&out_dir))?;
+    let mut files = Vec::with_capacity(plan.dumps.len());
     for d in &plan.dumps {
         let target = out_dir.join(&d.file);
-        std::fs::write(&target, to_js_json_compact(&d.parsed)).map_err(io(&target))?;
+        let text = to_js_json_compact(&d.parsed);
+        std::fs::write(&target, &text).map_err(io(&target))?;
+        let schema = d.parsed.get("_schema").and_then(Value::as_str);
+        files.push(ManifestFile::of(&d.file, text.as_bytes(), schema));
     }
+    // After the data, from the bytes just written, so every hash matches its blob.
+    let manifest = work_dir.join("build.json");
+    std::fs::write(
+        &manifest,
+        build_manifest(
+            build,
+            &plan.origin,
+            plan.patch.as_deref(),
+            &plan.extractor,
+            &files,
+        ),
+    )
+    .map_err(io(&manifest))?;
 
     // After the fetch, so the base is chosen from every published tag.
     let notes = compute_notes(build, &plan.dumps, work_dir);
@@ -808,24 +909,61 @@ mod tests {
         }
     }
 
+    fn clean(commit: &str) -> Extractor {
+        Extractor {
+            commit: commit.into(),
+            dirty: false,
+        }
+    }
+
     #[test]
-    fn build_manifest_matches_script() {
-        // JSON.stringify({build, channel, patch, branch}, null, 2) + "\n" in the script.
-        assert_eq!(
-            build_manifest(
-                "5.0.202.35026",
-                &origin("PTU", Some("sc-alpha-5.0.0")),
-                None
-            ),
-            "{\n  \"build\": \"5.0.202.35026\",\n  \"channel\": \"PTU\",\n  \"patch\": \"5.0.0\",\n  \"branch\": \"sc-alpha-5.0.0\"\n}\n"
+    fn build_manifest_fields_and_order() {
+        let files = [
+            ManifestFile::of("game-ships.json", b"{}", Some("game-ships@1")),
+            ManifestFile::of("game-ammo.json", b"abc", None),
+        ];
+        let text = build_manifest(
+            "5.0.202.35026",
+            &origin("PTU", Some("sc-alpha-5.0.0")),
+            None,
+            &clean("0123abc"),
+            &files,
         );
         assert_eq!(
-            build_manifest("1.0.191.55227", &origin("HOTFIX", None), Some("1.0.2")),
-            "{\n  \"build\": \"1.0.191.55227\",\n  \"channel\": \"HOTFIX\",\n  \"patch\": \"1.0.2\",\n  \"branch\": null\n}\n"
+            text,
+            "{\n  \"build\": \"5.0.202.35026\",\n  \"channel\": \"PTU\",\n  \"patch\": \"5.0.0\",\n  \"branch\": \"sc-alpha-5.0.0\",\n  \"extractor\": {\n    \"commit\": \"0123abc\"\n  },\n  \"files\": [\n    {\n      \"name\": \"data/game-ammo.json\",\n      \"sha256\": \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\",\n      \"bytes\": 3\n    },\n    {\n      \"name\": \"data/game-ships.json\",\n      \"sha256\": \"44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\",\n      \"bytes\": 2,\n      \"schema\": \"game-ships@1\"\n    }\n  ]\n}\n"
         );
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert!(v["extractor"].get("dirty").is_none());
+        let dirty = Extractor {
+            commit: "c".into(),
+            dirty: true,
+        };
+        let v: Value = serde_json::from_str(&build_manifest(
+            "1.0.191.55227",
+            &origin("HOTFIX", None),
+            Some("1.0.2"),
+            &dirty,
+            &[],
+        ))
+        .unwrap();
+        assert_eq!(v["patch"], "1.0.2");
+        assert_eq!(v["branch"], Value::Null);
+        assert_eq!(v["extractor"], json!({"commit": "c", "dirty": true}));
+        assert_eq!(v["files"], json!([]));
+        let v: Value = serde_json::from_str(&build_manifest(
+            "b",
+            &origin("LIVE", None),
+            None,
+            &clean("c"),
+            &[],
+        ))
+        .unwrap();
+        assert_eq!(v["patch"], Value::Null);
+        // Same inputs, same bytes: no timestamp.
         assert_eq!(
-            build_manifest("b", &origin("LIVE", None), None),
-            "{\n  \"build\": \"b\",\n  \"channel\": \"LIVE\",\n  \"patch\": null,\n  \"branch\": null\n}\n"
+            build_manifest("b", &origin("LIVE", None), None, &clean("c"), &files),
+            build_manifest("b", &origin("LIVE", None), None, &clean("c"), &files)
         );
     }
 
@@ -947,6 +1085,13 @@ mod tests {
     fn plans_and_stages_without_pushing() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
+        // The publishing checkout: build.json records its HEAD (untracked files are not
+        // "dirty", so the sandbox below does not count).
+        git_in(root, &["init", "--quiet", "-b", "main"]);
+        std::fs::write(root.join("tracked.txt"), "x").unwrap();
+        git_in(root, &["add", "tracked.txt"]);
+        git_in(root, &["commit", "--quiet", "-m", "extractor"]);
+        let head = git(root, &["rev-parse", "HEAD"]).unwrap();
         // A remote with one published 1.0.1 build.
         let seed = root.join("seed");
         write(
@@ -991,11 +1136,11 @@ mod tests {
         let data = root.join("data");
         write(
             &data.join("game-weapons.json"),
-            json!({"_build": "1.0.2", "shipWeapons": [{"recordName": "EntityClassDefinition.A", "name": "Alpha", "dps": 125, "nameStatus": "placeholder"}], "fpsWeapons": [], "missiles": []}),
+            json!({"_build": "1.0.2", "_schema": "game-weapons@1", "shipWeapons": [{"recordName": "EntityClassDefinition.A", "name": "Alpha", "dps": 125, "nameStatus": "placeholder"}], "fpsWeapons": [], "missiles": []}),
         );
         write(
             &data.join("game-ships.json"),
-            json!({"_build": "1.0.2", "vehicles": [{"recordName": "EntityClassDefinition.S", "name": "Ship", "description": "prose"}]}),
+            json!({"_build": "1.0.2", "_schema": "game-ships@1", "vehicles": [{"recordName": "EntityClassDefinition.S", "name": "Ship", "description": "prose"}]}),
         );
         let opts = PublishOptions {
             root: root.to_path_buf(),
@@ -1008,6 +1153,7 @@ mod tests {
         };
         let p = plan(&opts).unwrap();
         assert_eq!(p.build, "1.0.2");
+        assert_eq!(p.extractor, clean(&head));
         assert_eq!(
             p.warnings[0],
             "No channel recorded for 1.0.2; assuming LIVE. Pass --channel to override."
@@ -1023,7 +1169,7 @@ mod tests {
         );
         let text = render_dry_run(&p);
         assert!(text.starts_with(
-            "\nBuild:  1.0.2\nRepo:   test/dumps\nRelease: LIVE 1.0.2 [--latest]\nFiles:  2\n\n"
+            &format!("\nBuild:  1.0.2\nRepo:   test/dumps\nRelease: LIVE 1.0.2 [--latest]\nExtractor: {head}\nFiles:  2\n\n")
         ));
         assert!(text.contains("(redacted from 0.00 MB)"));
         assert!(text.contains("names: 1 placeholder"));
@@ -1045,6 +1191,46 @@ mod tests {
         assert!(work.join("notes/1.0.2.md").exists() && work.join("README.md").exists());
         let ships = std::fs::read_to_string(work.join("data/game-ships.json")).unwrap();
         assert!(!ships.contains("prose") && ships.contains("\"_redacted\":[\"description\"]"));
+        assert!(
+            ships.starts_with("{\"_build\":\"1.0.2\",\"_schema\":\"game-ships@1\",\"_redacted\"")
+        );
+
+        // build.json: parses, is committed, and every hash and size is the blob's.
+        let manifest: Value =
+            serde_json::from_str(&git(&work, &["show", "1.0.2:build.json"]).unwrap()).unwrap();
+        assert_eq!(
+            git(&work, &["show", "1.0.2:build.json"]).unwrap(),
+            std::fs::read_to_string(work.join("build.json"))
+                .unwrap()
+                .trim_end()
+        );
+        assert_eq!(manifest["build"], "1.0.2");
+        assert_eq!(manifest["channel"], "LIVE");
+        assert_eq!(manifest["extractor"], json!({"commit": head}));
+        let files = manifest["files"].as_array().unwrap();
+        let names: Vec<&str> = files.iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            vec!["data/game-ships.json", "data/game-weapons.json"]
+        );
+        for f in files {
+            let name = f["name"].as_str().unwrap();
+            let blob = Command::new("git")
+                .args(["cat-file", "blob", &format!("1.0.2:{name}")])
+                .current_dir(&work)
+                .output()
+                .unwrap()
+                .stdout;
+            let want = ManifestFile::of(name.strip_prefix("data/").unwrap(), &blob, None);
+            assert_eq!(f["sha256"], want.sha256, "{name}");
+            assert_eq!(f["bytes"], want.bytes, "{name}");
+            let stem = name
+                .strip_prefix("data/")
+                .unwrap()
+                .strip_suffix(".json")
+                .unwrap();
+            assert_eq!(f["schema"], format!("{stem}@1"), "{name}");
+        }
         // Nothing reached the remote.
         assert!(
             git(&remote, &["tag", "--list", "1.0.2"])
@@ -1055,6 +1241,17 @@ mod tests {
         assert_eq!(
             stage(&p, &work, false).unwrap(),
             StageOutcome::AlreadyPublished
+        );
+        // A tracked change makes the extractor dirty; an untracked file does not.
+        std::fs::write(root.join("untracked.txt"), "y").unwrap();
+        assert!(!extractor_of(root).unwrap().dirty);
+        std::fs::write(root.join("tracked.txt"), "changed").unwrap();
+        assert_eq!(
+            extractor_of(root).unwrap(),
+            Extractor {
+                commit: head,
+                dirty: true
+            }
         );
     }
 }

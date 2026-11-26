@@ -517,6 +517,9 @@ impl Domain for Fire {
     fn name(&self) -> &'static str {
         "game-fire"
     }
+    fn schema_version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &'static str {
         "Fire-hazard rules (ignition by damage type, oxygen, spread, room heat) and what makes each ship item start a fire: ignite rolls on death, thermal death explosions, fire misfires, overheat and misfire temperatures; also fuel tanks, and the hit detonation of missiles, bombs and mines."
