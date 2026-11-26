@@ -177,9 +177,18 @@ Consumers: codex commodity detail and mining tab, SCMCP.
 7. **D8.**
 8. **D6**, last: it is all estimates, and only snares consumes it.
 
-## Open questions
+## Decisions (2026-11-25)
 
-- D2: which `missionResultReputationRewards` index is which outcome? No record says.
-- D3: identity rows for classes missing from `game-item-tags`: yes or no?
-- D5: one `totals` object, or per power state (`Online`, `Offline`, `Travelling`)?
-- D7: is the canonical code `Code` or the short name, when they differ?
+1. **D2 reputation rewards:** keep the index. `repRewards` is published as a 5-slot list in the
+   record's order, and an `_assumptions` entry says the outcome per slot is not stated. No
+   labels are inferred. They get added if a later build or a record states them.
+2. **D3 missing items: add minimal rows.** The ~269 classes missing from `game-item-tags` (214
+   blueprint products, 55 NPC gear classes) get identity-only rows: class, name / `nameKey`,
+   type, size and grade from `AttachDef`. Each carries `source: "blueprint" | "npcGear"`, so
+   `game-item-obtain` can list their blueprint and NPC-gear sources.
+3. **D5 totals: per power state.** `totals.byState: {Online: {powerDraw, coolantDraw, em, ir},
+   Travelling: {...}, ...}` for each state the component records give. It is marked as an
+   estimate (every stock part is assumed to be in that state).
+4. **D7 manufacturer code: keep the short name, add `Code`.** `manufacturerCode` stays the short
+   name every consumer keys on today (`AEGS`). The record's own `Code` is published beside it as
+   `recordCode` (`AEG`, or `null` when empty). No ids change and there's no `_schema` bump.
