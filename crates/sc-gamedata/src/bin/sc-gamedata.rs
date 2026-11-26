@@ -834,7 +834,7 @@ fn dispatch_block(plan: &publish::PublishPlan, repos: &[String]) -> String {
     block
 }
 
-fn print_release_steps(plan: &publish::PublishPlan, edit: bool) {
+fn print_release_steps(plan: &publish::PublishPlan, edit: bool, dispatch: bool) {
     println!("\nrelease (run yourself; this tool does not call gh):");
     if edit {
         println!("{}", release_edit_line(plan));
@@ -846,15 +846,18 @@ fn print_release_steps(plan: &publish::PublishPlan, edit: bool) {
     println!("{}", release_create_line(plan));
     println!("# then, from {}:", plan.work_dir.display());
     println!("{}", release_upload_line(plan));
-    println!("# then tell the tool repos:");
-    print!("{}", dispatch_block(plan, &tool_repos()));
+    if dispatch {
+        println!("# then tell the tool repos:");
+        print!("{}", dispatch_block(plan, &tool_repos()));
+    }
 }
 
 /// The script's GitHub release steps as a POSIX shell script, for `make publish` to run:
 /// `gh release edit` first when the build was republished, then `ensureRelease` (create
 /// the release unless `gh release view` finds one), then `gh release upload <tag>
-/// build.json --clobber` from the dumps checkout. This tool never runs it.
-fn release_script(plan: &publish::PublishPlan, edit: bool) -> String {
+/// build.json --clobber` from the dumps checkout, then (when `dispatch`, i.e. something was
+/// published) the tool repos' data-sync. This tool never runs it.
+fn release_script(plan: &publish::PublishPlan, edit: bool, dispatch: bool) -> String {
     let view = shell_line(&[
         "gh".into(),
         "release".into(),
@@ -880,7 +883,9 @@ fn release_script(plan: &publish::PublishPlan, edit: bool) -> String {
         release_create_line(plan)
     ));
     script.push_str(&release_upload_block(plan));
-    script.push_str(&dispatch_block(plan, &tool_repos()));
+    if dispatch {
+        script.push_str(&dispatch_block(plan, &tool_repos()));
+    }
     script
 }
 
@@ -888,16 +893,17 @@ fn release_script(plan: &publish::PublishPlan, edit: bool) -> String {
 fn release_steps(
     plan: &publish::PublishPlan,
     edit: bool,
+    dispatch: bool,
     gh_script: Option<&Path>,
 ) -> Result<(), String> {
     let Some(file) = gh_script else {
-        print_release_steps(plan, edit);
+        print_release_steps(plan, edit, dispatch);
         return Ok(());
     };
     if let Some(dir) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    std::fs::write(file, release_script(plan, edit))
+    std::fs::write(file, release_script(plan, edit, dispatch))
         .map_err(|e| format!("{}: {e}", file.display()))?;
     println!("\nrelease steps written to {}", file.display());
     Ok(())
@@ -964,7 +970,8 @@ fn run_publish(flags: &Flags) -> Result<ExitCode, String> {
                 "Build {} is already published as a tag. Pass --republish to replace it.",
                 plan.build
             );
-            release_steps(&plan, false, gh_script.as_deref())?;
+            // Nothing new was published: backfill a missing release, but tell no tool.
+            release_steps(&plan, false, false, gh_script.as_deref())?;
         }
         publish::StageOutcome::Staged {
             republished, notes, ..
@@ -983,7 +990,7 @@ fn run_publish(flags: &Flags) -> Result<ExitCode, String> {
                     println!();
                 }
             }
-            release_steps(&plan, republished, gh_script.as_deref())?;
+            release_steps(&plan, republished, true, gh_script.as_deref())?;
             println!(
                 "\n{} {} to {}.",
                 if republished {
@@ -2611,7 +2618,7 @@ mod tests {
             notes: publish::PublishNotes::Skipped(String::new()),
             warnings: Vec::new(),
         };
-        let fresh = release_script(&plan, false);
+        let fresh = release_script(&plan, false, true);
         assert!(fresh.starts_with("#!/bin/sh\n"));
         assert!(fresh.contains("set -e\n"));
         assert!(!fresh.contains("gh release edit"));
@@ -2630,7 +2637,10 @@ mod tests {
             .unwrap();
         assert!(upload < dispatch);
         assert!(fresh.ends_with("fi\n"));
-        let edited = release_script(&plan, true);
+        let edited = release_script(&plan, true, true);
+        // An "already published" run backfills the release but dispatches nothing.
+        let quiet = release_script(&plan, false, false);
+        assert!(quiet.contains("gh release upload") && !quiet.contains("gh workflow run"));
         let edit = edited.find("gh release edit 5.0.202.35026").unwrap();
         assert!(edit < edited.find("gh release view").unwrap());
         assert!(edited.contains("gh release upload 5.0.202.35026 build.json --clobber"));
