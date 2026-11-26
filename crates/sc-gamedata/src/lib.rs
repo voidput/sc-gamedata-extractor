@@ -46,6 +46,7 @@ pub mod overlays;
 pub mod pipeline;
 pub mod query;
 pub mod records;
+pub mod resource_chain;
 pub mod search_index;
 pub mod source;
 pub mod strings;
