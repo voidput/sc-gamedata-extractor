@@ -2,7 +2,7 @@
 title: Dump reuse by starorg-codex
 tags: [docs, plans, specs]
 updated: 2026-11-25
-status: draft
+status: active
 ---
 
 # Dump reuse by starorg-codex

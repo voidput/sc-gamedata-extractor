@@ -2,7 +2,7 @@
 title: Dataset changes requested by the tool repos
 tags: [docs, plans, specs]
 updated: 2026-11-25
-status: draft
+status: active
 ---
 
 # Dataset changes requested by the tool repos
