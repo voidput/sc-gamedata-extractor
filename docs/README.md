@@ -22,6 +22,7 @@ Plain-markdown index. Obsidian index: [Home.md](Home.md).
 - [Tool data sync](plans/specs/tool-data-sync.md) — dumps hub fans out to snares, MCsim, Bindscape via GHA, LIVE + PTU (active)
 - [Dump reuse](plans/specs/dump-reuse.md) — build.json manifest, _schema, game-npc-loadouts for starorg-codex reuse (draft)
 - [Consumer datasets](plans/specs/consumer-datasets.md) — dataset asks from snares/MCsim/Bindscape/sc-telemetry: game-fire gaps, game-ordnance, ship capabilities (draft)
+- [Cross-dataset derivations](plans/specs/cross-dataset-derivations.md) — joins over published datasets: reverse links, missions × reputation/starmap, tag index, resource chain, per-ship totals (draft)
 
 ## Datasets
 

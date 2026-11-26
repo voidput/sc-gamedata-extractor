@@ -17,3 +17,4 @@ updated: 2026-11-23
 - [[tool-data-sync]] — ([open](specs/tool-data-sync.md)) — tool data sync from the dumps hub (active)
 - [[dump-reuse]] — ([open](specs/dump-reuse.md)) — dump reuse by starorg-codex (draft)
 - [[consumer-datasets]] — ([open](specs/consumer-datasets.md)) — dataset changes requested by the tool repos (draft)
+- [[cross-dataset-derivations]] — ([open](specs/cross-dataset-derivations.md)) — cross-dataset derivations (draft)

@@ -22,6 +22,7 @@ Vault index (Obsidian). Plain-link twin: [README.md](README.md).
 - [[tool-data-sync]] — ([open](plans/specs/tool-data-sync.md)) — dumps hub fans out to snares, MCsim, Bindscape via GHA, LIVE + PTU (active)
 - [[dump-reuse]] — ([open](plans/specs/dump-reuse.md)) — build.json manifest, _schema, game-npc-loadouts for starorg-codex reuse (draft)
 - [[consumer-datasets]] — ([open](plans/specs/consumer-datasets.md)) — dataset asks from snares/MCsim/Bindscape/sc-telemetry: game-fire gaps, game-ordnance, ship capabilities (draft)
+- [[cross-dataset-derivations]] — ([open](plans/specs/cross-dataset-derivations.md)) — joins over published datasets: reverse links, missions × reputation/starmap, tag index, resource chain, per-ship totals (draft)
 
 ## Datasets
 
