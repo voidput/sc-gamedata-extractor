@@ -79,6 +79,20 @@ snares / MCsim / scsticks  .github/workflows/data-sync.yml
   on snares, MCsim and scsticks only. This is what the dispatches API requires. The user creates
   it and stores it in the dumps repo.
 
+- **Dispatch from `make publish` (2026-11-25, the primary path).** After the release and the
+  `build.json` upload, the generated gh script runs
+  `gh workflow run data-sync.yml -R <tool> -f tag=<build> -f channel=<LIVE|PTU>` for
+  `voidput/snares`, `voidput/MCsim` and `voidput/scsticks` (`$SC_TOOL_REPOS` overrides that
+  list).
+  - It uses the publisher's own `gh` login, so it needs no secret.
+  - Other channels are not dispatched.
+  - If a repo's default branch has no `data-sync.yml` yet, the dispatch to that repo fails and
+    the publish continues.
+  - `SC_NO_DISPATCH=1` skips the dispatch.
+  - `fanout.yml` stays automatic on releases, but without `TOOLS_DISPATCH_TOKEN` it logs a
+    notice and succeeds instead of failing. The secret is optional: adding it gives a second
+    path that needs no other change.
+
 ### Consumers (`data-sync.yml`, same shape in all three)
 
 - `on: repository_dispatch: types: [gamedata-published]`, plus `workflow_dispatch` with `tag`

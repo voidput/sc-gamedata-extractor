@@ -1,5 +1,7 @@
 # Fan-out: tell the downstream tools that a game build was published here.
-# Installed into sc-gamedata-dumps by scripts/publish-dump.mjs (template copy).
+# Installed into sc-gamedata-dumps by `sc-gamedata publish` (template copy, refreshed each
+# publish). A second automatic path: `make publish` also dispatches each tool directly with
+# the publisher's gh login, so this job only acts when TOOLS_DISPATCH_TOKEN is set.
 # Sends repository_dispatch "gamedata-published" {tag, build, channel} to each
 # tool; each tool's data-sync.yml bakes the datasets at that tag.
 name: fanout
@@ -118,8 +120,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$TOKEN" ]; then
-            echo "::error::secret TOOLS_DISPATCH_TOKEN is not set"
-            exit 1
+            # make publish already ran `gh workflow run data-sync.yml` for each tool from
+            # the publisher's machine, so a missing secret is not an error here.
+            echo "::notice::TOOLS_DISPATCH_TOKEN is not set; skipping $REPO (make publish dispatches from the publisher's machine)"
+            exit 0
           fi
           body="$(jq -nc --arg tag "$TAG" --arg build "$BUILD" --arg channel "$CHANNEL" \
             '{event_type: "gamedata-published", client_payload: {tag: $tag, build: $build, channel: $channel}}')"

@@ -781,6 +781,56 @@ fn release_upload_block(plan: &publish::PublishPlan) -> String {
     )
 }
 
+/// The tool repos told about a publish, `owner/repo` each: `$SC_TOOL_REPOS` (space
+/// separated), else snares, MCsim and Bindscape (scsticks).
+fn tool_repos() -> Vec<String> {
+    std::env::var("SC_TOOL_REPOS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_else(|| {
+            ["voidput/snares", "voidput/MCsim", "voidput/scsticks"]
+                .map(str::to_string)
+                .to_vec()
+        })
+}
+
+/// `gh workflow run data-sync.yml` per tool repo for a LIVE or PTU build, so each tool
+/// re-bakes from the new tag without a dispatch secret in the dumps repo. Other channels
+/// are not dispatched. A repo whose default branch has no `data-sync.yml` yet fails its
+/// line only: the publish has already happened. `SC_NO_DISPATCH=1` skips the block.
+fn dispatch_block(plan: &publish::PublishPlan, repos: &[String]) -> String {
+    let channel = plan.origin.channel.as_str();
+    if channel != "LIVE" && channel != "PTU" {
+        return format!("echo {}\n", shell_line(&[format!(
+            "{channel} builds are not dispatched to the tool repos."
+        )]));
+    }
+    let mut block = String::from("if [ -z \"${SC_NO_DISPATCH:-}\" ]; then\n");
+    for repo in repos {
+        let run = shell_line(&[
+            "gh".into(),
+            "workflow".into(),
+            "run".into(),
+            "data-sync.yml".into(),
+            "-R".into(),
+            repo.clone(),
+            "-f".into(),
+            format!("tag={}", plan.build),
+            "-f".into(),
+            format!("channel={channel}"),
+        ]);
+        let ok = shell_line(&["echo".into(), format!("dispatched data-sync to {repo}")]);
+        let fail = shell_line(&[
+            "echo".into(),
+            format!("dispatch to {repo} failed (is data-sync.yml on its default branch?)"),
+        ]);
+        block.push_str(&format!("  if {run}; then {ok}; else {fail}; fi\n"));
+    }
+    block.push_str("fi\n");
+    block
+}
+
 fn print_release_steps(plan: &publish::PublishPlan, edit: bool) {
     println!("\nrelease (run yourself; this tool does not call gh):");
     if edit {
@@ -793,6 +843,8 @@ fn print_release_steps(plan: &publish::PublishPlan, edit: bool) {
     println!("{}", release_create_line(plan));
     println!("# then, from {}:", plan.work_dir.display());
     println!("{}", release_upload_line(plan));
+    println!("# then tell the tool repos:");
+    print!("{}", dispatch_block(plan, &tool_repos()));
 }
 
 /// The script's GitHub release steps as a POSIX shell script, for `make publish` to run:
@@ -825,6 +877,7 @@ fn release_script(plan: &publish::PublishPlan, edit: bool) -> String {
         release_create_line(plan)
     ));
     script.push_str(&release_upload_block(plan));
+    script.push_str(&dispatch_block(plan, &tool_repos()));
     script
 }
 
@@ -2490,11 +2543,48 @@ mod tests {
         let upload = fresh.find("gh release upload 5.0.202.35026 build.json --clobber -R voidput/sc-gamedata-dumps\n").unwrap();
         assert!(fresh.find("gh release create").unwrap() < upload);
         assert!(fresh.contains("\ncd '/tmp/dumps checkout'\nif [ \"$(git rev-parse HEAD)\" = \"$(git rev-parse '5.0.202.35026^{commit}')\" ]; then\n  gh release upload"));
-        assert!(fresh.ends_with("release asset not uploaded.'\nfi\n"));
+        assert!(fresh.contains("release asset not uploaded.'\nfi\n"));
+        // Then every tool repo is told, after the upload, unless SC_NO_DISPATCH is set.
+        let dispatch = fresh.find("if [ -z \"${SC_NO_DISPATCH:-}\" ]; then\n").unwrap();
+        assert!(upload < dispatch);
+        assert!(fresh.ends_with("fi\n"));
         let edited = release_script(&plan, true);
         let edit = edited.find("gh release edit 5.0.202.35026").unwrap();
         assert!(edit < edited.find("gh release view").unwrap());
         assert!(edited.contains("gh release upload 5.0.202.35026 build.json --clobber"));
+    }
+
+    #[test]
+    fn dispatch_block_runs_data_sync_per_tool_for_live_and_ptu_only() {
+        let mut plan = publish::PublishPlan {
+            build: "4.10.201.48085".into(),
+            repo: "voidput/sc-gamedata-dumps".into(),
+            remote: String::new(),
+            work_dir: PathBuf::from("/tmp/d"),
+            origin: publish::Origin {
+                channel: "LIVE".into(),
+                branch: None,
+            },
+            patch: None,
+            republish: false,
+            extractor: publish::Extractor {
+                commit: "c".into(),
+                dirty: false,
+            },
+            dumps: Vec::new(),
+            notes: publish::PublishNotes::Skipped(String::new()),
+            warnings: Vec::new(),
+        };
+        let repos = vec!["voidput/snares".to_string(), "voidput/MCsim".to_string()];
+        let live = dispatch_block(&plan, &repos);
+        assert_eq!(
+            live,
+            "if [ -z \"${SC_NO_DISPATCH:-}\" ]; then\n  if gh workflow run data-sync.yml -R voidput/snares -f tag=4.10.201.48085 -f channel=LIVE; then echo 'dispatched data-sync to voidput/snares'; else echo 'dispatch to voidput/snares failed (is data-sync.yml on its default branch?)'; fi\n  if gh workflow run data-sync.yml -R voidput/MCsim -f tag=4.10.201.48085 -f channel=LIVE; then echo 'dispatched data-sync to voidput/MCsim'; else echo 'dispatch to voidput/MCsim failed (is data-sync.yml on its default branch?)'; fi\nfi\n"
+        );
+        plan.origin.channel = "HOTFIX".into();
+        let hotfix = dispatch_block(&plan, &repos);
+        assert!(!hotfix.contains("gh workflow run"));
+        assert!(hotfix.contains("not dispatched"));
     }
 
     #[test]
