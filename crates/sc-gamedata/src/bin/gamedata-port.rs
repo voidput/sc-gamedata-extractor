@@ -254,6 +254,16 @@ fn extract(
         );
         write(strings::NAME, &output::to_js_json(&v))?;
     }
+    // Identity rows for untagged blueprint products and NPC gear, before the obtain file.
+    if let Some(r) =
+        sc_gamedata::domains::item_tags::add_identity_rows(out, &records, &files.localization)
+            .map_err(|e| format!("{}: {e}", sc_gamedata::domains::item_tags::FILE))?
+    {
+        eprintln!(
+            "  item-tags identity rows: {} blueprint, {} npcGear",
+            r.blueprint, r.npc_gear
+        );
+    }
     // Derived from item-tags + loot + item-sources: same rule as the index.
     if let Some(w) = sc_gamedata::item_obtain::write_item_obtain(out)
         .map_err(|e| format!("{}: {e}", sc_gamedata::item_obtain::FILE))?
@@ -262,6 +272,16 @@ fn extract(
             "  wrote {} ({} items, {} KB)",
             w.file.display(),
             w.items,
+            w.bytes / 1024
+        );
+    }
+    if let Some(w) = sc_gamedata::tag_index::write_tag_index(out)
+        .map_err(|e| format!("{}: {e}", sc_gamedata::tag_index::FILE))?
+    {
+        eprintln!(
+            "  wrote {} ({} tags, {} KB)",
+            w.file.display(),
+            w.tags,
             w.bytes / 1024
         );
     }
