@@ -1988,6 +1988,29 @@ fn run_extract(command: &str, flags: &Flags, rest: &[String]) -> Result<ExitCode
         }
     }
     let started = std::time::Instant::now();
+    // Reverse links (stockOn, mountedOn, firedBy) from ships + weapons, added in place to
+    // the components, weapons and ammo files of the same build, before they are snapshotted.
+    if let Some(r) = sc_gamedata::reverse_links::apply_reverse_links(&out)
+        .map_err(|e| format!("reverse links: {e}"))?
+    {
+        println!(
+            "links       stockOn {}, mountedOn {}, firedBy {} ({} ammo fired by no weapon; {} file(s) rewritten)",
+            r.stock_on,
+            r.mounted_on,
+            r.fired_by,
+            r.unfired_ammo.len(),
+            r.files.len()
+        );
+        // A run naming only an input (ships) can change a target it did not write: keep the
+        // snapshot in step with the file on disk.
+        for f in &r.files {
+            if let Some(n) = f.file_name().and_then(|n| n.to_str())
+                && !snapshot_files.iter().any(|s| s == n)
+            {
+                snapshot_files.push(n.to_string());
+            }
+        }
+    }
     if let Some(w) = sc_gamedata::item_obtain::write_item_obtain(&out)
         .map_err(|e| format!("{}: {e}", sc_gamedata::item_obtain::FILE))?
     {

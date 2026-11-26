@@ -273,6 +273,15 @@ fn extract(
             r.blueprint, r.npc_gear
         );
     }
+    // Reverse links (stockOn, mountedOn, firedBy), as sc-gamedata's parse adds them.
+    if let Some(r) = sc_gamedata::reverse_links::apply_reverse_links(out)
+        .map_err(|e| format!("reverse links: {e}"))?
+    {
+        eprintln!(
+            "  links: stockOn {}, mountedOn {}, firedBy {}",
+            r.stock_on, r.mounted_on, r.fired_by
+        );
+    }
     // Derived from item-tags + loot + item-sources: same rule as the index.
     if let Some(w) = sc_gamedata::item_obtain::write_item_obtain(out)
         .map_err(|e| format!("{}: {e}", sc_gamedata::item_obtain::FILE))?
