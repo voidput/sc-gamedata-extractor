@@ -133,6 +133,15 @@ Built Rust-only (the TS parse is being retired on `feat/rust-switchover`), measu
       top 12 areas;
     - `otherTables[[table, perRollEstimate]]`, capped at 12, with `otherTablesTotal`.
     - Objects per row were 19.4 MB minified; index arrays are 3.45 MB.
+    - Rows of one item that differ only in that index are merged: the first column is the
+      sorted index list, so the columns are `spawns` / `tables`
+      (`loot[[spawns[], kind, scoreEstimate, perRollEstimate]]`,
+      `otherTables[[tables[], perRollEstimate]]`). Merged rows rank by scoreEstimate
+      (perRollEstimate) descending, then first index. `areasTotal` / `otherTablesTotal`
+      still count areas and tables; `summary.lootRows` counts merged rows. A fifth
+      `_assumptions` entry says so. LIVE: 44,677 loot rows to 10,508 (other tables 44,135
+      to 14,300); minified (`jq -c`) 3,480,844 to 2,242,559 B, gzip -9 128,300 to
+      107,041 B, pretty 8,683,498 to 5,577,306 B.
   - A spawn carries `area, config, entity, entityName, table, slotShare, fillChance, chance,
     maxResults, contents, size, rarity` and `raritySource: "name"` (the fallback from the
     config name).
@@ -141,7 +150,8 @@ Built Rust-only (the TS parse is being retired on `feat/rust-switchover`), measu
     `blueprints[]{recordName, rewardContracts}`.
   - `_assumptions` holds the even-pick note. Odds are rounded to 4 significant digits.
   - LIVE: 5,930 items, 44,677 loot rows and 2,513 spawns. Cost: +3.45 MB minified (8.5 MB
-    pretty), just over the +2 to 3 MB budget. The obtain step takes 1.3 s, which is inside the
+    pretty), just over the +2 to 3 MB budget; with the merged rows above, +2.24 MB (5.6 MB
+    pretty), inside it. The obtain step takes 1.3 s, which is inside the
     run-to-run noise of the full extract (19 to 23 s).
   - **Acceptance:**
     - 20 sample items (random loot with up to 12 and with more than 12 areas, fixed, loose,
@@ -184,9 +194,15 @@ to 35,890), +2.7 KB on commodities.
   - `belts[]` sums the spawn groups per (location, rock). Each belt has
     `place`/`placeSource`, `system`, `kind`, `tier`, `spawnShare` and the percent range.
   - A spawn entry counts once. 55 of 268 rocks list an element twice in their composition
-    (Quantainium at 5.7-11.7 and 28.3-78.3), so summing `oreSpawns` rows doubles the share:
-    the app's `query/mined.rs` `report` still does that and needs the same fix. The percent
-    range is the lowest and highest bound over the parts, not their total.
+    (Quantainium at 5.7-11.7 and 28.3-78.3), so summing `oreSpawns` rows doubles the share.
+    The percent range is the lowest and highest bound over the parts, not their total.
+  - `query/mined.rs` `report` now matches: it divides a (location, rock)'s summed rows by
+    the number of parts of the ore in the rock's composition (`rocks[].ores`), rounds to
+    1e-5 like the dataset, and spans the percent range over the parts. Quantainium at
+    Stanton4a: 0.24024 before, 0.12012 now (the record's value). A check of the query
+    against `ores[].belts[]` over the LIVE parse: 567 belts, 0 share and 0 range mismatches,
+    none missing or extra. No CLI command runs the query (only `query::commodities` takes
+    it as a callback), so the check calls `where_mined` directly.
   - `spots[]` gives the best rock per slot preset: `area`, `rock`, `slotShare`, `configs`.
     It skips slots of weight 0.
 - `oreKey` is `ore_core` of the element key. `resource` and `minedAs[]` come from the

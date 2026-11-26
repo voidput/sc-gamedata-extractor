@@ -13,19 +13,23 @@
 //!
 //! Spawn points and table names repeat across thousands of items, so they are listed once
 //! (`spawns[]`, `tables[]`) and rows point at them by index; rows are arrays named by
-//! `lootColumns` / `otherTableColumns` (the search index does the same). Shape:
+//! `lootColumns` / `otherTableColumns` (the search index does the same). Rows of one item
+//! that differ only in that index are merged: the first column is the sorted list of
+//! indices (`spawns` / `tables`), and merged rows are ranked by score (per-roll odds for
+//! `otherTables`) descending, then by their first index. `areasTotal` / `otherTablesTotal`
+//! still count areas and tables, not rows. Shape:
 //!
 //! ```text
 //! { _source, _extracted, _build, _assumptions[],
-//!   lootColumns: ["spawn", "kind", "scoreEstimate", "perRollEstimate"],
-//!   otherTableColumns: ["table", "perRollEstimate"],
+//!   lootColumns: ["spawns", "kind", "scoreEstimate", "perRollEstimate"],
+//!   otherTableColumns: ["tables", "perRollEstimate"],
 //!   spawns[]{area, config, entity, entityName, table, slotShare, fillChance, chance,
 //!            maxResults, contents, size, rarity, raritySource},
 //!   tables[],
 //!   items: { <className>: {
 //!     eligibility{canLoot, reason, rarity},
-//!     loot[[spawn, kind, scoreEstimate, perRollEstimate]],   (best spawn of the top 12 areas)
-//!     areasTotal, otherTables[[table, perRollEstimate]], otherTablesTotal,
+//!     loot[[spawns[], kind, scoreEstimate, perRollEstimate]], (best spawn of the top 12 areas)
+//!     areasTotal, otherTables[[tables[], perRollEstimate]], otherTablesTotal,
 //!     contractAwards[]{generator, contract, amount, weighting},
 //!     wikelo[]{trade, amount, source}, blueprints[]{recordName, rewardContracts} } },
 //!   summary }
@@ -61,6 +65,7 @@ pub const ASSUMPTIONS: &[&str] = &[
     "scoreEstimate: odds one spawned container (or rack, or loose spot) of the area's best spawn holds the item: slotShare x fillChance x chance x (1 - (1 - perRollEstimate)^maxResults); fixed and loose spawns are slotShare x fillChance.",
     "Random loot is opt-in: only items tagged LootGeneration/CanGenerateAsLoot roll from tables; fixed and loose spawns ignore the flag.",
     "rarity: the spawn's LootRarity tag, else (raritySource: name) the last word of the spawn config's name.",
+    "loot / otherTables rows of one item that differ only in the spawn or table index are one row whose first column (spawns / tables) lists the indices, sorted; rows rank by scoreEstimate (perRollEstimate for otherTables) descending, then first index. areasTotal / otherTablesTotal count areas and tables, not rows.",
 ];
 
 const RARITIES: &[&str] = &["Common", "Uncommon", "Rare", "Epic", "Legendary"];
@@ -164,15 +169,50 @@ fn spawn_of(a: &AreaSummary, area: Option<&LootArea>) -> Value {
     Value::Object(row)
 }
 
-/// One loot row: `[spawn, kind, scoreEstimate, perRollEstimate]` (no odds per roll for
-/// fixed and loose spawns).
-fn loot_row(spawn: usize, a: &AreaSummary) -> Value {
+/// The columns of one loot row after the spawn index: `[kind, scoreEstimate,
+/// perRollEstimate]` (no odds per roll for fixed and loose spawns).
+fn loot_rest(a: &AreaSummary) -> Vec<Value> {
     let h = &a.best;
-    let mut row = vec![json!(spawn), json!(kind_name(h.kind)), json!(sig(h.score))];
+    let mut row = vec![json!(kind_name(h.kind)), json!(sig(h.score))];
     if let Some(p) = h.per_roll {
         row.push(json!(sig(p)));
     }
-    Value::Array(row)
+    row
+}
+
+/// Merge `(index, rest)` rows whose `rest` is equal into `[[indices...], ...rest]`, the
+/// indices sorted; rows ranked by `rest[rank]` descending, then by their first index.
+fn merge_rows(rows: impl IntoIterator<Item = (usize, Vec<Value>)>, rank: usize) -> Vec<Value> {
+    let mut groups: Vec<(Vec<usize>, Vec<Value>)> = Vec::new();
+    let mut by_rest: HashMap<String, usize> = HashMap::new();
+    for (ix, rest) in rows {
+        let key = to_js_json_compact(&Value::Array(rest.clone()));
+        match by_rest.get(&key) {
+            Some(&g) => groups[g].0.push(ix),
+            None => {
+                by_rest.insert(key, groups.len());
+                groups.push((vec![ix], rest));
+            }
+        }
+    }
+    for g in &mut groups {
+        g.0.sort_unstable();
+    }
+    let num = |r: &[Value]| r.get(rank).and_then(Value::as_f64).unwrap_or(0.0);
+    groups.sort_by(|a, b| {
+        num(&b.1)
+            .partial_cmp(&num(&a.1))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0[0].cmp(&b.0[0]))
+    });
+    groups
+        .into_iter()
+        .map(|(ixs, rest)| {
+            let mut row = vec![json!(ixs)];
+            row.extend(rest);
+            Value::Array(row)
+        })
+        .collect()
 }
 
 fn award_row(a: &ContractAward) -> Value {
@@ -313,16 +353,16 @@ pub fn build_body(inputs: &Inputs) -> Map<String, Value> {
             );
         }
         if !areas.is_empty() {
-            row.insert(
-                "loot".into(),
-                Value::Array(
-                    areas
-                        .iter()
-                        .zip(keys)
-                        .map(|(a, k)| loot_row(spawn_ix[k], a))
-                        .collect(),
-                ),
+            let loot = merge_rows(
+                areas
+                    .iter()
+                    .zip(keys)
+                    .map(|(a, k)| (spawn_ix[k], loot_rest(a))),
+                1,
             );
+            // Rows written, after merging.
+            counts[8] += loot.len();
+            row.insert("loot".into(), Value::Array(loot));
             row.insert("areasTotal".into(), json!(areas.len()));
             counts[0] += 1;
             for (k, slot) in [
@@ -338,13 +378,13 @@ pub fn build_body(inputs: &Inputs) -> Map<String, Value> {
         if !other.is_empty() {
             row.insert(
                 "otherTables".into(),
-                Value::Array(
+                Value::Array(merge_rows(
                     other
                         .iter()
                         .take(MAX_OTHER_TABLES)
-                        .map(|p| json!([table_ix[p.table.as_str()], sig(p.per_roll)]))
-                        .collect(),
-                ),
+                        .map(|p| (table_ix[p.table.as_str()], vec![json!(sig(p.per_roll))])),
+                    0,
+                )),
             );
             if other.len() > MAX_OTHER_TABLES {
                 row.insert("otherTablesTotal".into(), json!(other.len()));
@@ -405,7 +445,6 @@ pub fn build_body(inputs: &Inputs) -> Map<String, Value> {
             counts[7] += 1;
         }
         if !row.is_empty() {
-            counts[8] += areas.len().min(MAX_LOOT);
             items.insert(item.class_name.clone(), Value::Object(row));
         }
     }
@@ -430,11 +469,11 @@ pub fn build_body(inputs: &Inputs) -> Map<String, Value> {
     });
     body.insert(
         "lootColumns".into(),
-        json!(["spawn", "kind", "scoreEstimate", "perRollEstimate"]),
+        json!(["spawns", "kind", "scoreEstimate", "perRollEstimate"]),
     );
     body.insert(
         "otherTableColumns".into(),
-        json!(["table", "perRollEstimate"]),
+        json!(["tables", "perRollEstimate"]),
     );
     body.insert(
         "spawns".into(),
@@ -617,8 +656,8 @@ mod tests {
         let a = &items["rifle_a"];
         assert_eq!(a["eligibility"], json!({"canLoot": true}));
         // Pool of 2 rifles: 0.5 per roll; 2 rolls: 1 - 0.5^2 = 0.75; x 0.75 slot share.
-        assert_eq!(a["loot"], json!([[0, "loot", 0.5625, 0.5]]));
-        let spawn = &doc["spawns"][a["loot"][0][0].as_u64().unwrap() as usize];
+        assert_eq!(a["loot"], json!([[[0], "loot", 0.5625, 0.5]]));
+        let spawn = &doc["spawns"][a["loot"][0][0][0].as_u64().unwrap() as usize];
         assert_eq!(spawn["entity"], "crate");
         assert_eq!(spawn["slotShare"], json!(0.75));
         assert_eq!(spawn["maxResults"], json!(2.0));
@@ -628,15 +667,15 @@ mod tests {
             (json!("Rare"), json!("name"))
         );
         assert_eq!(doc["tables"], json!(["boss"]));
-        assert_eq!(a["otherTables"], json!([[0, 0.5]]));
+        assert_eq!(a["otherTables"], json!([[[0], 0.5]]));
         // The second rifle shares the spawn row.
-        assert_eq!(items["rifle_b"]["loot"][0][0], json!(0));
+        assert_eq!(items["rifle_b"]["loot"][0][0], json!([0]));
         let h = &items["helmet"];
         assert_eq!(
             h["eligibility"],
             json!({"canLoot": false, "reason": "Reward"})
         );
-        assert_eq!(h["loot"], json!([[1, "fixed", 0.25]]));
+        assert_eq!(h["loot"], json!([[[1], "fixed", 0.25]]));
         assert_eq!(doc["spawns"][1]["entity"], "rack");
         assert!(h.get("otherTables").is_none());
         assert_eq!(
@@ -649,6 +688,42 @@ mod tests {
         );
         assert_eq!(doc["summary"]["items"], json!(3));
         assert_eq!(doc["_build"], "4.10.201.1");
+    }
+
+    #[test]
+    fn spawns_with_identical_numbers_share_one_row() {
+        let mut inp = inputs();
+        // A second area with the same config: the rifles roll there with the same odds.
+        let areas = inp.datasets.areas.as_mut().unwrap();
+        let mut twin = areas[0].clone();
+        twin.name = "v3slotpreset_bunker".into();
+        areas.push(twin);
+        let doc = build_document(&inp);
+        let a = &doc["items"]["rifle_a"];
+        assert_eq!(a["loot"], json!([[[0, 2], "loot", 0.5625, 0.5]]));
+        assert_eq!(a["areasTotal"], json!(2), "areas, not rows");
+        assert_eq!(doc["spawns"][0]["area"], "v3slotpreset_caves");
+        assert_eq!(doc["spawns"][2]["area"], "v3slotpreset_bunker");
+        assert_eq!(doc["lootColumns"][0], "spawns");
+        assert_eq!(doc["otherTableColumns"][0], "tables");
+    }
+
+    #[test]
+    fn merged_rows_rank_by_number_then_first_index() {
+        let rows = vec![
+            (5, vec![json!("loot"), json!(0.1)]),
+            (3, vec![json!("loot"), json!(0.2)]),
+            (1, vec![json!("loot"), json!(0.1)]),
+            (0, vec![json!("fixed"), json!(0.1)]),
+        ];
+        assert_eq!(
+            merge_rows(rows, 1),
+            vec![
+                json!([[3], "loot", 0.2]),
+                json!([[0], "fixed", 0.1]),
+                json!([[1, 5], "loot", 0.1]),
+            ]
+        );
     }
 
     #[test]

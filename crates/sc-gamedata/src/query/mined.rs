@@ -8,6 +8,7 @@
 
 use super::obtain::area_label;
 use super::types::LootArea;
+use crate::js::round_to;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -67,6 +68,7 @@ pub struct MinedBelt {
     /// group, summed over groups. Not normalised across groups (hand-mining groups weigh in
     /// the tens, ship groups below 1), so compare it only between rows of one kind.
     pub spawn_share: Option<f64>,
+    /// Lowest and highest bound over the composition parts holding the ore, not a total.
     pub min_percent: Option<f64>,
     pub max_percent: Option<f64>,
 }
@@ -207,36 +209,63 @@ pub fn where_mined(spawns: &MiningSpawns, areas: &[LootArea], query: &str) -> Ve
         .collect()
 }
 
+/// `f` of both when both are set, else the one that is.
+fn merge_opt(a: Option<f64>, b: Option<f64>, f: impl Fn(f64, f64) -> f64) -> Option<f64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(f(x, y)),
+        (x, y) => x.or(y),
+    }
+}
+
 fn report(spawns: &MiningSpawns, areas: &[LootArea], ore: String) -> MinedReport {
     let rocks: Vec<&MinedRock> = spawns
         .rocks
         .iter()
         .filter(|r| r.ores.iter().any(|o| o.element == ore))
         .collect();
-    // One row per location and rock: a rock several spawn groups roll adds up.
+    // One row per location and rock: a rock several spawn groups roll adds up, as
+    // `game-mining-spawns` `ores[].belts[]` does. `oreSpawns` has a row per composition
+    // part, so a rock listing the ore twice gives each spawn entry two rows: the entry
+    // counts once (the rows' shares over the parts), and the percent range spans the parts.
+    let parts_of = |rock: &str| {
+        spawns.rocks.iter().find(|r| r.rock == rock).map_or(1, |r| {
+            r.ores.iter().filter(|o| o.element == ore).count().max(1)
+        })
+    };
     let mut belts: Vec<MinedBelt> = Vec::new();
+    let mut totals: Vec<Option<f64>> = Vec::new();
     for s in spawns.ore_spawns.iter().filter(|s| s.ore == ore) {
-        if let Some(b) = belts
-            .iter_mut()
-            .find(|b| b.location == s.location && b.rock == s.rock)
+        let i = match belts
+            .iter()
+            .position(|b| b.location == s.location && b.rock == s.rock)
         {
-            b.spawn_share = match (b.spawn_share, s.spawn_share) {
-                (Some(x), Some(y)) => Some(x + y),
-                (x, y) => x.or(y),
-            };
-            continue;
-        }
-        belts.push(MinedBelt {
-            location: s.location.clone(),
-            system: s.system.clone(),
-            body: s.body.clone(),
-            rock: s.rock.clone(),
-            kind: s.kind.clone(),
-            tier: s.tier.clone(),
-            spawn_share: s.spawn_share,
-            min_percent: s.min_percent,
-            max_percent: s.max_percent,
-        });
+            Some(i) => {
+                let b = &mut belts[i];
+                b.min_percent = merge_opt(b.min_percent, s.min_percent, f64::min);
+                b.max_percent = merge_opt(b.max_percent, s.max_percent, f64::max);
+                i
+            }
+            None => {
+                belts.push(MinedBelt {
+                    location: s.location.clone(),
+                    system: s.system.clone(),
+                    body: s.body.clone(),
+                    rock: s.rock.clone(),
+                    kind: s.kind.clone(),
+                    tier: s.tier.clone(),
+                    spawn_share: None,
+                    min_percent: s.min_percent,
+                    max_percent: s.max_percent,
+                });
+                totals.push(None);
+                belts.len() - 1
+            }
+        };
+        totals[i] = merge_opt(totals[i], s.spawn_share, |x, y| x + y);
+    }
+    for (b, t) in belts.iter_mut().zip(totals) {
+        // Entry shares are on a 1e-5 grid; the dataset rounds its sums to it too.
+        b.spawn_share = t.map(|t| round_to(t / parts_of(&b.rock) as f64, 1e5));
     }
     belts.sort_by(|a, b| {
         b.spawn_share
@@ -427,5 +456,69 @@ mod tests {
         assert_eq!(q.spots[0].place, None);
         assert_eq!(r[1].ore, "iron_ore");
         assert!(r[1].belts.is_empty());
+    }
+
+    /// LIVE compositions list an element twice (Quantainium at 5.7-11.7 and 28.3-78.3):
+    /// `oreSpawns` has a row per part, the spawn entry counts once.
+    #[test]
+    fn a_rock_holding_an_ore_in_two_parts_counts_its_spawn_once() {
+        let s: MiningSpawns = serde_json::from_value(serde_json::json!({
+            "rocks": [
+                {"rock": "MineableRock_SurfaceLegendary_Quantainium", "kind": "ship",
+                 "ores": [{"element": "quantainium_raw"}, {"element": "quantainium_raw"},
+                          {"element": "iron_ore"}]}
+            ],
+            "oreSpawns": [
+                {"ore": "quantainium_raw", "location": "Stanton4a",
+                 "rock": "MineableRock_SurfaceLegendary_Quantainium", "kind": "ship",
+                 "spawnShare": 0.12012, "minPercent": 5.7, "maxPercent": 11.7},
+                {"ore": "quantainium_raw", "location": "Stanton4a",
+                 "rock": "MineableRock_SurfaceLegendary_Quantainium", "kind": "ship",
+                 "spawnShare": 0.12012, "minPercent": 28.3, "maxPercent": 78.3},
+                {"ore": "quantainium_raw", "location": "Stanton1",
+                 "rock": "MineableRock_SurfaceLegendary_Quantainium", "kind": "ship",
+                 "spawnShare": 0.1, "minPercent": 5.7, "maxPercent": 11.7},
+                {"ore": "quantainium_raw", "location": "Stanton1",
+                 "rock": "MineableRock_SurfaceLegendary_Quantainium", "kind": "ship",
+                 "spawnShare": 0.1, "minPercent": 28.3, "maxPercent": 78.3},
+                {"ore": "quantainium_raw", "location": "Stanton1",
+                 "rock": "MineableRock_SurfaceLegendary_Quantainium", "kind": "ship",
+                 "spawnShare": 0.02, "minPercent": 5.7, "maxPercent": 11.7},
+                {"ore": "quantainium_raw", "location": "Stanton1",
+                 "rock": "MineableRock_SurfaceLegendary_Quantainium", "kind": "ship",
+                 "spawnShare": 0.02, "minPercent": 28.3, "maxPercent": 78.3},
+                {"ore": "iron_ore", "location": "Stanton4a",
+                 "rock": "MineableRock_SurfaceLegendary_Quantainium", "kind": "ship",
+                 "spawnShare": 0.12012, "minPercent": 1.0, "maxPercent": 2.0}
+            ]
+        }))
+        .unwrap();
+        let r = &where_mined(&s, &[], "quantainium")[0];
+        let belts: Vec<_> = r
+            .belts
+            .iter()
+            .map(|b| {
+                (
+                    b.location.as_str(),
+                    b.spawn_share,
+                    b.min_percent,
+                    b.max_percent,
+                )
+            })
+            .collect();
+        assert_eq!(
+            belts,
+            [
+                ("Stanton4a", Some(0.12012), Some(5.7), Some(78.3)),
+                ("Stanton1", Some(0.12), Some(5.7), Some(78.3)),
+            ],
+            "one entry per spawn, two groups at Stanton1 summed"
+        );
+        let iron = &where_mined(&s, &[], "iron")[0];
+        assert_eq!(
+            iron.belts[0].spawn_share,
+            Some(0.12012),
+            "a single part is as before"
+        );
     }
 }
